@@ -1,12 +1,20 @@
 import sys
 import logging
 from pathlib import Path
+import torch
+import warnings
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QComboBox, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QGroupBox, QLineEdit, QPushButton
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtCore import Qt
 from modules.infrastructure.vision.sam_engine import SamEngine
 from modules.presentation.qt.segmentation.segmentation_viewer import SegmentationViewer
 from modules.presentation.qt.theme_manager import apply_theme
 from utils.get_base_path import get_base_path
+
+# 忽略 PyTorch 的 FutureWarning 和其他警告
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=UserWarning, module='torch')
+warnings.filterwarnings('ignore', message='.*torch.*')
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -46,15 +54,47 @@ class SegmentationLauncher(QMainWindow):
         from PySide6.QtCore import Qt
         
         central = QWidget()
-        layout = QVBoxLayout()
-        layout.setSpacing(20)
-        layout.setContentsMargins(20, 20, 20, 20)
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 頂部區域：標題 + 頭貼
+        top_widget = QWidget()
+        top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(20, 20, 20, 10)
+        
+        # 左側：標題
+        title_label = QLabel("SAM 影像標註工具")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
+        top_layout.addWidget(title_label)
+        top_layout.addStretch()
+        
+        # 右側：作者頭貼
+        avatar_label = QLabel()
+        avatar_path = Path(get_base_path()) / "assets" / "Coffee.png"
+        if avatar_path.exists():
+            pixmap = QPixmap(str(avatar_path))
+            scaled_pixmap = pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            avatar_label.setPixmap(scaled_pixmap)
+            avatar_label.setToolTip("作者: Coffee")
+        else:
+            avatar_label.setText("☕")
+            avatar_label.setStyleSheet("font-size: 24px;")
+        
+        top_layout.addWidget(avatar_label)
+        top_widget.setLayout(top_layout)
+        main_layout.addWidget(top_widget)
+        
+        # 主要內容區域
+        content_layout = QVBoxLayout()
+        content_layout.setSpacing(20)
+        content_layout.setContentsMargins(20, 10, 20, 20)
         
         # Welcome label
-        label = QLabel("歡迎使用影像分割工具\n\n請選擇模型並從「檔案」選單選擇要分割的影像")
+        label = QLabel("歡迎使用影像標註工具\n\n請選擇模型並從「檔案」選單選擇要分割的影像")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("font-size: 14px;")
-        layout.addWidget(label)
+        content_layout.addWidget(label)
         
         # Model selection group
         model_group = QGroupBox("模型選擇")
@@ -69,7 +109,7 @@ class SegmentationLauncher(QMainWindow):
         model_layout.addWidget(self.model_combo, 1)
         model_group.setLayout(model_layout)
         
-        layout.addWidget(model_group)
+        content_layout.addWidget(model_group)
         
         # Path input group
         path_group = QGroupBox("快速路徑")
@@ -111,10 +151,11 @@ class SegmentationLauncher(QMainWindow):
         path_layout.addLayout(folder_path_layout)
         path_group.setLayout(path_layout)
         
-        layout.addWidget(path_group)
-        layout.addStretch()
+        content_layout.addWidget(path_group)
+        content_layout.addStretch()
         
-        central.setLayout(layout)
+        main_layout.addLayout(content_layout)
+        central.setLayout(main_layout)
         self.setCentralWidget(central)
     
     def _create_menus(self):
@@ -157,12 +198,28 @@ class SegmentationLauncher(QMainWindow):
     
     def _ensure_sam_loaded(self) -> bool:
         """Load SAM model if not already loaded."""
-        if self.sam is not None:
-            return True
-        
         # Get selected model
         selected = self.model_combo.currentText()
         model_file, model_type = self.model_files[selected]
+        
+        # 檢查是否需要重新載入（模型類型改變）
+        if self.sam is not None:
+            if hasattr(self.sam, 'model_type') and self.sam.model_type == model_type:
+                return True
+            else:
+                # 模型類型改變，需要卸載舊模型
+                logger.info(f"模型類型改變，卸載舊模型...")
+                try:
+                    self.sam.unload()
+                    self.sam = None
+                    # 強制垃圾回收
+                    import gc
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                except Exception as e:
+                    logger.warning(f"卸載舊模型時發生錯誤: {e}")
         
         base_path = Path(get_base_path())
         model_path = base_path / "models" / model_file
@@ -182,8 +239,10 @@ class SegmentationLauncher(QMainWindow):
             self.sam.load()
             
             progress.close()
+            logger.info(f"成功載入模型: {model_type}")
             return True
         except Exception as e:
+            logger.error(f"載入 SAM 模型失敗: {e}", exc_info=True)
             QMessageBox.critical(self, "錯誤", f"載入 SAM 模型失敗: {e}")
             return False
     

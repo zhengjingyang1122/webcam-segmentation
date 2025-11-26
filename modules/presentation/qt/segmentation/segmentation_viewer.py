@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
 from PySide6.QtCore import QDir, QEvent, QPoint, QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QImage, QPainter, QPixmap, QTransform
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
+    QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
@@ -24,6 +27,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -255,11 +259,12 @@ class SegmentationViewer(QMainWindow):
         self.view.viewport().installEventFilter(self)  # hover/點選 hit test
 
         # 右側群組 UI
-        grp_nav = QGroupBox("導覽")
-        self.btn_prev = QPushButton("← 上一張")
-        self.btn_next = QPushButton("下一張 →")
-        self.btn_reset_view = QPushButton("重設畫布")
-        lay_nav = QHBoxLayout()
+        grp_nav = QGroupBox("導航")
+        self.btn_prev = QPushButton("◀ 上一張 (PageUp)")
+        self.btn_next = QPushButton("下一張 (PageDown) ▶")
+        self.btn_reset_view = QPushButton("🔄")  # 使用圖示
+        self.btn_reset_view.setToolTip("重設畫布")
+        lay_nav = QHBoxLayout()  # 橫向排列
         lay_nav.addWidget(self.btn_prev)
         lay_nav.addWidget(self.btn_next)
         lay_nav.addWidget(self.btn_reset_view)
@@ -311,8 +316,19 @@ class SegmentationViewer(QMainWindow):
 
         # [新增] 建立在 grp_mode 與 grp_save 之間，與其它群組同一層級
         grp_labels = QGroupBox("輸出標註格式")
-        self.chk_yolo_det = QCheckBox("YOLO 檢測 bbox")
-        self.chk_yolo_seg = QCheckBox("YOLO 分割 polygon")
+        
+        # YOLO 格式
+        self.chk_yolo_det = QCheckBox("YOLO Detection (bbox)")
+        self.chk_yolo_seg = QCheckBox("YOLO Segmentation (polygon)")
+        
+        # COCO 格式
+        self.chk_coco = QCheckBox("COCO JSON")
+        
+        # Pascal VOC 格式
+        self.chk_voc = QCheckBox("Pascal VOC XML")
+        
+        # LabelMe 格式
+        self.chk_labelme = QCheckBox("LabelMe JSON")
 
         self.spn_cls = QSpinBox()
         self.spn_cls.setRange(0, 999)
@@ -321,32 +337,54 @@ class SegmentationViewer(QMainWindow):
         lay_labels = QFormLayout()
         lay_labels.addRow(self.chk_yolo_det)
         lay_labels.addRow(self.chk_yolo_seg)
+        lay_labels.addRow(self.chk_coco)
+        lay_labels.addRow(self.chk_voc)
+        lay_labels.addRow(self.chk_labelme)
         lay_labels.addRow("class_id", self.spn_cls)
         grp_labels.setLayout(lay_labels)
 
+        # 顏色設定（初始化，UI 移至菜單）
+        self.mask_color = [0, 255, 0]  # 預設綠色 (BGR)
+        self.bbox_color = [0, 255, 0]  # 預設綠色 (BGR)
+
         grp_save = QGroupBox("儲存")
-        self.btn_save_selected = QPushButton("儲存已選目標(.png)")
+        
+        # 輸出路徑設定
+        output_path_layout = QHBoxLayout()
+        output_path_label = QLabel("輸出路徑:")
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("預設為原影像同層資料夾")
+        self.output_path_edit.setText("")  # 空白表示使用預設
+        btn_browse_output = QPushButton("瀏覽...")
+        btn_browse_output.clicked.connect(self._browse_output_path)
+        
+        output_path_layout.addWidget(output_path_label)
+        output_path_layout.addWidget(self.output_path_edit, 1)
+        output_path_layout.addWidget(btn_browse_output)
+        
+        # 輸出格式選擇（重新命名）
+        format_layout = QHBoxLayout()
+        format_label = QLabel("影像檔案格式:")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["PNG", "JPG", "BMP"])
+        self.format_combo.setCurrentIndex(0)  # 預設 PNG
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(self.format_combo, 1)
+        
+        self.btn_save_selected = QPushButton("💾 儲存已選目標 (Ctrl+S)")
         self.lbl_selected = QLabel("已選目標：0")
+        self.lbl_selected.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         lay_save = QVBoxLayout()
+        lay_save.addLayout(output_path_layout)
+        lay_save.addLayout(format_layout)
         lay_save.addWidget(self.btn_save_selected)
         lay_save.addWidget(self.lbl_selected)
         grp_save.setLayout(lay_save)
 
-        grp_params = QGroupBox("自動分割參數")
-        form = QFormLayout()
-        self.spn_points = QSpinBox()
-        self.spn_points.setRange(4, 128)
-        self.spn_points.setValue(self.params["points_per_side"])
-        self.spn_iou = QDoubleSpinBox()
-        self.spn_iou.setRange(0.1, 0.99)
-        self.spn_iou.setSingleStep(0.01)
-        self.spn_iou.setValue(self.params["pred_iou_thresh"])
-        self.btn_apply_params = QPushButton("套用參數並重算本張")
-        form.addRow("points_per_side", self.spn_points)
-        form.addRow("pred_iou_thresh", self.spn_iou)
-        form.addRow(self.btn_apply_params)
-        grp_params.setLayout(form)
+        # 參數設定（移至菜單，但保留變數）
 
+        # 使用 DockWidget 讓右側面板可拖曳
         right_box = QVBoxLayout()
         right_box.addWidget(grp_nav)
         right_box.addWidget(grp_crop)
@@ -354,22 +392,28 @@ class SegmentationViewer(QMainWindow):
         right_box.addWidget(grp_display)
         right_box.addWidget(grp_labels)
         right_box.addWidget(grp_save)
-        right_box.addWidget(grp_params)
         right_box.addStretch(1)
+        
         right_widget = QWidget()
         right_widget.setLayout(right_box)
+        
+        # 建立可拖曳的 Dock
+        self.dock_controls = QDockWidget("控制面板", self)
+        self.dock_controls.setWidget(right_widget)
+        self.dock_controls.setFeatures(
+            QDockWidget.DockWidgetMovable | 
+            QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_controls)
 
-        central = QWidget(self)
-        self.setCentralWidget(central)
-        main = QHBoxLayout(central)
-        main.addWidget(self.view, 1)
-        main.addWidget(right_widget, 0)
-
-        # 左側檔案樹 dock removed for standalone app
+        # 設定中央widget為影像檢視
+        self.setCentralWidget(self.view)
+        
+        # 建立菜單欄
+        self._create_menu_bar()
 
         # connect
         self.btn_reset_view.clicked.connect(self.view.reset_view)
-        self.btn_apply_params.clicked.connect(self._apply_params)
         self.btn_prev.clicked.connect(self._prev_image)
         self.btn_next.clicked.connect(self._next_image)
         self.btn_save_selected.clicked.connect(self._save_selected)
@@ -379,10 +423,24 @@ class SegmentationViewer(QMainWindow):
         self._spawned_views: list[SegmentationViewer] = []
         self.status.message("準備就緒")
         
-        # 設定選項顏色樣式（藍色表示選取）
-        self._apply_selection_styles()
-
         self._start_batch_processing()
+    
+    def _create_menu_bar(self):
+        """建立菜單欄"""
+        menubar = self.menuBar()
+        
+        # 選項菜單
+        options_menu = menubar.addMenu("選項(&O)")
+        
+        # 顏色設定
+        color_action = QAction("顏色設定...", self)
+        color_action.triggered.connect(self._show_color_dialog)
+        options_menu.addAction(color_action)
+        
+        # 分割參數
+        params_action = QAction("分割參數...", self)
+        params_action.triggered.connect(self._show_params_dialog)
+        options_menu.addAction(params_action)
 
 
 
@@ -420,58 +478,6 @@ class SegmentationViewer(QMainWindow):
             self.batch_progress.close()
         # Load the first image (now likely cached)
         self._load_current_image(recompute=False)
-    
-    def _apply_selection_styles(self):
-        """設定 RadioButton 和 CheckBox 的藍色選取樣式"""
-        # 藍色主題樣式
-        radio_style = """
-            QRadioButton::indicator:checked {
-                background-color: #2196F3;
-                border: 2px solid #1976D2;
-                border-radius: 7px;
-            }
-            QRadioButton::indicator:unchecked {
-                background-color: #424242;
-                border: 2px solid #666666;
-                border-radius: 7px;
-            }
-            QRadioButton::indicator {
-                width: 14px;
-                height: 14px;
-            }
-            QRadioButton:checked {
-                color: #2196F3;
-                font-weight: bold;
-            }
-        """
-        
-        checkbox_style = """
-            QCheckBox::indicator:checked {
-                background-color: #2196F3;
-                border: 2px solid #1976D2;
-            }
-            QCheckBox::indicator:unchecked {
-                background-color: #424242;
-                border: 2px solid #666666;
-            }
-            QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
-            }
-            QCheckBox:checked {
-                color: #2196F3;
-                font-weight: bold;
-            }
-        """
-        
-        # 套用樣式到所有 RadioButton
-        for rb in [self.rb_full, self.rb_bbox, self.rb_mode_union, self.rb_mode_indiv, 
-                   self.rb_show_mask, self.rb_show_bbox]:
-            rb.setStyleSheet(radio_style)
-        
-        # 套用樣式到所有 CheckBox
-        for cb in [self.chk_yolo_det, self.chk_yolo_seg]:
-            cb.setStyleSheet(checkbox_style)
 
     # ---- load / recompute ----
 
@@ -568,15 +574,168 @@ class SegmentationViewer(QMainWindow):
         QMessageBox.critical(self, "分割失敗", f"無法分割：{err_msg}")
 
     def _update_ui_after_load(self, path):
-        self.selected_indices.clear()
+        # 嘗試載入已儲存的標註
+        annotation_file = path.parent / f"{path.stem}_annotations.json"
+        if annotation_file.exists():
+            try:
+                with open(annotation_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.selected_indices = set(data.get('selected_indices', []))
+                    logger.info(f"載入標註: {len(self.selected_indices)} 個選取的遮罩")
+                    self.status.message(f"載入標註: {len(self.selected_indices)} 個已選取的遮罩")
+            except Exception as e:
+                logger.warning(f"載入標註失敗: {e}")
+                self.selected_indices.clear()
+        else:
+            self.selected_indices.clear()
+        
         self._hover_idx = None
-        self._update_canvas()
         self._update_selected_count()
         self._update_nav_buttons()
+        self._update_canvas()  # 確保畫布更新以顯示已選取的遮罩
+        
         if path in self.cache:
+            num_masks = len(self.cache[path][1])
+            num_selected = len(self.selected_indices)
             self.status.message(
-                f"載入完成：{Path(path).name}，共有 {len(self.cache[path][1])} 個候選遮罩"
+                f"載入完成：{Path(path).name}，共有 {num_masks} 個候選遮罩，已選取 {num_selected} 個"
             )
+    
+    def _show_color_dialog(self):
+        """顯示顏色設定對話框"""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("顏色設定")
+        dialog.setModal(True)
+        
+        layout = QFormLayout()
+        
+        # Mask 顏色
+        mask_layout = QHBoxLayout()
+        btn_mask = QPushButton("選擇顏色")
+        lbl_mask = QLabel()
+        lbl_mask.setFixedSize(30, 20)
+        lbl_mask.setStyleSheet(f"background-color: rgb({self.mask_color[2]}, {self.mask_color[1]}, {self.mask_color[0]}); border: 1px solid #666;")
+        
+        def choose_mask():
+            color = QColorDialog.getColor(QColor(self.mask_color[2], self.mask_color[1], self.mask_color[0]), self, "選擇 Mask 顏色")
+            if color.isValid():
+                self.mask_color = [color.blue(), color.green(), color.red()]
+                lbl_mask.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: 1px solid #666;")
+                self._update_canvas()
+        
+        btn_mask.clicked.connect(choose_mask)
+        mask_layout.addWidget(btn_mask)
+        mask_layout.addWidget(lbl_mask)
+        mask_layout.addStretch()
+        
+        # BBox 顏色
+        bbox_layout = QHBoxLayout()
+        btn_bbox = QPushButton("選擇顏色")
+        lbl_bbox = QLabel()
+        lbl_bbox.setFixedSize(30, 20)
+        lbl_bbox.setStyleSheet(f"background-color: rgb({self.bbox_color[2]}, {self.bbox_color[1]}, {self.bbox_color[0]}); border: 1px solid #666;")
+        
+        def choose_bbox():
+            color = QColorDialog.getColor(QColor(self.bbox_color[2], self.bbox_color[1], self.bbox_color[0]), self, "選擇 BBox 顏色")
+            if color.isValid():
+                self.bbox_color = [color.blue(), color.green(), color.red()]
+                lbl_bbox.setStyleSheet(f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: 1px solid #666;")
+                self._update_canvas()
+        
+        btn_bbox.clicked.connect(choose_bbox)
+        bbox_layout.addWidget(btn_bbox)
+        bbox_layout.addWidget(lbl_bbox)
+        bbox_layout.addStretch()
+        
+        layout.addRow("Mask 顏色:", mask_layout)
+        layout.addRow("BBox 顏色:", bbox_layout)
+        
+        # 按鈕
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addRow(buttons)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+    
+    def _show_params_dialog(self):
+        """顯示分割參數對話框"""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("分割參數設定")
+        dialog.setModal(True)
+        
+        layout = QFormLayout()
+        
+        # Points per side
+        spn_points = QSpinBox()
+        spn_points.setRange(4, 128)
+        spn_points.setValue(self.params["points_per_side"])
+        
+        # IoU threshold
+        spn_iou = QDoubleSpinBox()
+        spn_iou.setRange(0.1, 0.99)
+        spn_iou.setSingleStep(0.01)
+        spn_iou.setValue(self.params["pred_iou_thresh"])
+        
+        layout.addRow("Points per side:", spn_points)
+        layout.addRow("Pred IoU threshold:", spn_iou)
+        
+        # 按鈕
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        
+        dialog.setLayout(layout)
+        
+        if dialog.exec() == QDialog.Accepted:
+            self.params["points_per_side"] = spn_points.value()
+            self.params["pred_iou_thresh"] = spn_iou.value()
+            # 詢問是否立即重算
+            ret = QMessageBox.question(
+                self, "套用參數",
+                "是否使用新參數重新計算當前影像？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if ret == QMessageBox.Yes:
+                # 清理 CUDA 記憶體
+                import gc
+                import torch
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                
+                self._load_current_image(recompute=True)
+                if hasattr(self, 'status'):
+                    self.status.message_temp("參數已套用並重算", 1800)
+    
+    def _choose_mask_color(self):
+        """選擇 Mask 顏色（舊版，保留向後兼容）"""
+        self._show_color_dialog()
+    
+    def _choose_bbox_color(self):
+        """選擇 BBox 顏色（舊版，保留向後兼容）"""
+        self._show_color_dialog()
+    
+    def _browse_output_path(self):
+        """瀏覽並選擇輸出路徑"""
+        current_path = self.output_path_edit.text()
+        if not current_path and self.image_paths:
+            # 預設為第一張影像的目錄
+            current_path = str(self.image_paths[0].parent)
+        
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "選擇輸出資料夾",
+            current_path if current_path else str(Path.home())
+        )
+        if folder:
+            self.output_path_edit.setText(folder)
 
     def _apply_params(self) -> None:
         """Apply new segmentation parameters and recompute masks."""
@@ -656,20 +815,29 @@ class SegmentationViewer(QMainWindow):
                     if 0 <= i < len(masks):
                         sel_union = np.maximum(sel_union, masks[i])
                 m = sel_union > 0
-                base[m] = (base[m] * 0.4 + np.array([0, 255, 0]) * 0.6).astype(np.uint8)
+                # 使用自訂 mask 顏色
+                mask_color_bgr = np.array(self.mask_color, dtype=np.uint8)
+                base[m] = (base[m] * 0.4 + mask_color_bgr * 0.6).astype(np.uint8)
 
             if self._hover_idx is not None and 0 <= self._hover_idx < len(masks):
-                m = masks[self._hover_idx] > 0
-                base[m] = (base[m] * 0.2 + np.array([0, 255, 0]) * 0.8).astype(np.uint8)
-                contours, _ = cv2.findContours(
-                    m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                if contours:
-                    cv2.polylines(base, contours, True, (0, 255, 0), 2)
+                hover_mask = masks[self._hover_idx]
+                # 確保 mask 維度正確
+                if hover_mask.shape[:2] == base.shape[:2]:
+                    m = hover_mask > 0
+                    mask_color_bgr = np.array(self.mask_color, dtype=np.uint8)
+                    base[m] = (base[m] * 0.2 + mask_color_bgr * 0.8).astype(np.uint8)
+                    contours, _ = cv2.findContours(
+                        m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    if contours:
+                        # 使用自訂 bbox 顏色繪製輪廓
+                        bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
+                        cv2.polylines(base, contours, True, bbox_color_tuple, 2)
 
         else:
             # BBox 模式
             H, W = base.shape[:2]
+            bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
             if is_union and self.selected_indices:
                 # 聯集 + BBox: 只畫一個框線
                 union_mask = np.zeros((H, W), dtype=np.uint8)
@@ -677,16 +845,16 @@ class SegmentationViewer(QMainWindow):
                     if 0 <= i < len(masks):
                         union_mask = np.maximum(union_mask, masks[i])
                 x, y, w, h = compute_bbox(union_mask > 0)
-                cv2.rectangle(base, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 3)
             else:
                 # 個別 + BBox: 已選畫細線, 懸浮畫粗線
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
                         x, y, w, h = compute_bbox(masks[i] > 0)
-                        cv2.rectangle(base, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 2)
                 if self._hover_idx is not None and 0 <= self._hover_idx < len(masks):
                     x, y, w, h = compute_bbox(masks[self._hover_idx] > 0)
-                    cv2.rectangle(base, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                    cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 3)
 
         if hasattr(self, "status"):
             self.status.set_display_info(
@@ -726,14 +894,15 @@ class SegmentationViewer(QMainWindow):
         bgr, masks, _ = self.cache[path]
         source_name = Path(path).stem
 
-        out_dir = None
-        if self.pm:
-            source_name = self.pm.get_source_name(path)
-            out_dir = self.pm.get_objects_dir(source_name)
+        # 使用使用者設定的輸出路徑，或預設為原影像同層資料夾
+        custom_path = self.output_path_edit.text().strip()
+        if custom_path:
+            out_dir = Path(custom_path)
         else:
-            d = QFileDialog.getExistingDirectory(self, "選擇儲存資料夾", str(Path(path).parent))
-            if d:
-                out_dir = Path(d)
+            out_dir = Path(path).parent
+        
+        # 確保目錄存在
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         if not out_dir:
             self.status.message("取消儲存")
@@ -764,37 +933,16 @@ class SegmentationViewer(QMainWindow):
             # 原圖大小
             crop = bgra
             img_h, img_w = H, W
-            x, y, w, h = compute_bbox(union_mask > 0)
-            boxes = [(x, y, w, h)]
-            poly = self._compute_polygon(union_mask > 0)
-            polys = [poly]
-
-        # 寫 PNG
-        ok, buf = cv2.imencode(".png", crop)
-        if ok:
-            (out_dir / f"{base_name}.png").write_bytes(buf.tobytes())
-            # 寫標註 (依勾選)
-            self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
-            QMessageBox.information(self, "完成", "已儲存 1 個聯集物件")
-            self.status.message("完成")
+        # 使用使用者設定的輸出路徑，或預設為原影像同層資料夾
+        custom_path = self.output_path_edit.text().strip()
+        if custom_path:
+            out_dir = Path(custom_path)
         else:
-            logger.error("PNG encode 失敗: %s", out_dir / f"{base_name}.png")
-            QMessageBox.warning(self, "未儲存", "沒有任何檔案被寫出")
-
-    def _save_indices(self, indices: List[int]) -> None:
-        """Save multiple masks as individual images."""
-        path = self.image_paths[self.idx]
-        bgr, masks, _ = self.cache[path]
-
-        out_dir = None
+            out_dir = Path(path).parent
+        
+        # 確保目錄存在
+        out_dir.mkdir(parents=True, exist_ok=True)
         source_name = Path(path).stem
-        if self.pm:
-            source_name = self.pm.get_source_name(path)
-            out_dir = self.pm.get_objects_dir(source_name)
-        else:
-            d = QFileDialog.getExistingDirectory(self, "選擇儲存資料夾", str(Path(path).parent))
-            if d:
-                out_dir = Path(d)
 
         if not out_dir:
             self.status.message("取消儲存")
@@ -864,14 +1012,16 @@ class SegmentationViewer(QMainWindow):
                         if self._hover_idx is not None:
                             self._hover_idx = None
                             self._update_canvas()
-                        self.status.set_cursor_xy(None, None)  # 清空
+                        if hasattr(self, 'status'):
+                            self.status.set_cursor_xy(None, None)  # 清空
                     else:
                         x, y = img_xy
                         path = self.image_paths[self.idx]
                         _, masks, _ = self.cache[path]
                         self._hover_idx = self._hit_test_xy(masks, x, y)
                         self._update_canvas()
-                        self.status.set_cursor_xy(x, y)  # 即時更新游標座標
+                        if hasattr(self, 'status'):
+                            self.status.set_cursor_xy(x, y)  # 即時更新游標座標
                     return False
                 if event.type() == QEvent.MouseButtonPress:
                     pos = _pt(event)

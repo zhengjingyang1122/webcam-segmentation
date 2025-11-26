@@ -98,33 +98,16 @@ QMenu::item:selected {
     color: #1976d2;
 }
 
-QDockWidget {
-    color: #212121;
-}
-
-QDockWidget::title {
-    background-color: #f5f5f5;
-    padding: 6px;
-    border-bottom: 1px solid #e0e0e0;
-}
-
-QTreeView, QListView {
-    background-color: #ffffff;
-    color: #212121;
-    border: 1px solid #e0e0e0;
-}
-
-QTreeView::item:selected, QListView::item:selected {
-    background-color: #2196f3;
-    color: #ffffff;
-}
-
-QTreeView::item:hover, QListView::item:hover {
-    background-color: #e3f2fd;
-}
-
 QRadioButton, QCheckBox {
     color: #212121;
+}
+
+QRadioButton::indicator, QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 2px solid #5f6368;
+    background-color: #2b2f36;
 }
 
 QRadioButton::indicator:checked, QCheckBox::indicator:checked {
@@ -132,15 +115,8 @@ QRadioButton::indicator:checked, QCheckBox::indicator:checked {
     border: 2px solid #1976d2;
 }
 
-QLabel {
-    color: #212121;
-}
-
-QProgressBar {
-    border: 2px solid #e0e0e0;
-    border-radius: 6px;
-    text-align: center;
-    background-color: #f5f5f5;
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {
+    border: 2px solid #2196f3;
 }
 
 QProgressBar::chunk {
@@ -244,12 +220,17 @@ QTreeView, QListView {
 }
 
 QTreeView::item:selected, QListView::item:selected {
-    background-color: #4285f4;
-    color: #ffffff;
+    border: 2px solid #5f6368;
+    background-color: #2b2f36;
 }
 
-QRadioButton, QCheckBox {
-    color: #e8eaed;
+QRadioButton::indicator:checked, QCheckBox::indicator:checked {
+    background-color: #2196f3;
+    border: 2px solid #1976d2;
+}
+
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {
+    border: 2px solid #2196f3;
 }
 
 QLabel {
