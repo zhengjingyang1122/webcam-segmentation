@@ -26,8 +26,8 @@ class SegmentationLauncher(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Webcam Segmentation Tool")
-        self.resize(400, 200)
+        self.setWindowTitle("影像標註工具 By Coffee☕ v1.0.0")
+        self.resize(600, 200)
         
         self.sam = None
         self.viewer = None

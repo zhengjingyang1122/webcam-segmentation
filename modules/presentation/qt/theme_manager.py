@@ -1,242 +1,42 @@
 """Theme manager for webcam applications.
 
 Provides light and dark theme stylesheets for consistent UI theming.
+Loads themes from .qss files in the 'themes' directory.
 """
 
-LIGHT_THEME = """
-QWidget {
-    background-color: #fafafa;
-    color: #212121;
-    font-size: 12px;
-}
+import os
+import logging
+from pathlib import Path
 
-QMainWindow {
-    background-color: #ffffff;
-}
+logger = logging.getLogger(__name__)
 
-QGroupBox {
-    margin-top: 10px;
-    padding: 8px;
-    border: 2px solid #e0e0e0;
-    border-radius: 8px;
-    background-color: #ffffff;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 6px;
-    color: #1976d2;
-    font-weight: 600;
-}
-
-QPushButton {
-    padding: 8px 12px;
-    border: 1px solid #1976d2;
-    border-radius: 6px;
-    background: #2196f3;
-    color: #ffffff;
-    font-weight: 500;
-}
-
-QPushButton:hover {
-    background: #1976d2;
-    border: 1px solid #1565c0;
-}
-
-QPushButton:pressed {
-    background: #1565c0;
-}
-
-QPushButton:disabled {
-    background: #e0e0e0;
-    color: #9e9e9e;
-    border: 1px solid #bdbdbd;
-}
-
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    border: 2px solid #bdbdbd;
-    border-radius: 6px;
-    padding: 6px 8px;
-    background: #ffffff;
-    color: #212121;
-}
-
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-    border: 2px solid #2196f3;
-    background: #f5f9ff;
-}
-
-QMenuBar {
-    background-color: #f5f5f5;
-    color: #212121;
-    border-bottom: 1px solid #e0e0e0;
-}
-
-QMenuBar::item {
-    padding: 6px 12px;
-    background-color: transparent;
-}
-
-QMenuBar::item:selected {
-    background-color: #e3f2fd;
-    color: #1976d2;
-}
-
-QMenu {
-    background-color: #ffffff;
-    color: #212121;
-    border: 1px solid #e0e0e0;
-}
-
-QMenu::item {
-    padding: 6px 24px;
-}
-
-QMenu::item:selected {
-    background-color: #e3f2fd;
-    color: #1976d2;
-}
-
-QRadioButton, QCheckBox {
-    color: #212121;
-}
-
-QRadioButton::indicator, QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    border: 2px solid #5f6368;
-    background-color: #2b2f36;
-}
-
-QRadioButton::indicator:checked, QCheckBox::indicator:checked {
-    background-color: #2196f3;
-    border: 2px solid #1976d2;
-}
-
-QRadioButton::indicator:hover, QCheckBox::indicator:hover {
-    border: 2px solid #2196f3;
-}
-
-QProgressBar::chunk {
-    background-color: #2196f3;
-    border-radius: 4px;
-}
-"""
-
-DARK_THEME = """
-QWidget {
-    background-color: #1b1e23;
-    color: #e8eaed;
-    font-size: 12px;
-}
-
-QMainWindow {
-    background-color: #1b1e23;
-}
-
-QGroupBox {
-    margin-top: 10px;
-    padding: 8px;
-    border: 1px solid #3a3f47;
-    border-radius: 8px;
-    background-color: #1f2227;
-}
-
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 6px;
-    color: #cfd8dc;
-    font-weight: 600;
-}
-
-QPushButton {
-    padding: 6px 10px;
-    border: 1px solid #3a3f47;
-    border-radius: 6px;
-    background: #2b2f36;
-    color: #e8eaed;
-}
-
-QPushButton:hover {
-    background: #333844;
-}
-
-QPushButton:pressed {
-    background: #3a3f47;
-}
-
-QPushButton:disabled {
-    background: #1f2227;
-    color: #5f6368;
-}
-
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-    border: 1px solid #3a3f47;
-    border-radius: 6px;
-    padding: 4px 6px;
-    background: #1b1e23;
-    color: #e8eaed;
-}
-
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-    border: 1px solid #4285f4;
-}
-
-QMenuBar {
-    background-color: #1b1e23;
-    color: #e8eaed;
-}
-
-QMenuBar::item:selected {
-    background-color: #2b2f36;
-}
-
-QMenu {
-    background-color: #1b1e23;
-    color: #e8eaed;
-    border: 1px solid #3a3f47;
-}
-
-QMenu::item:selected {
-    background-color: #2b2f36;
-}
-
-QDockWidget {
-    color: #e8eaed;
-}
-
-QDockWidget::title {
-    background-color: #2b2f36;
-    padding: 4px;
-}
-
-QTreeView, QListView {
-    background-color: #1b1e23;
-    color: #e8eaed;
-    border: 1px solid #3a3f47;
-}
-
-QTreeView::item:selected, QListView::item:selected {
-    border: 2px solid #5f6368;
-    background-color: #2b2f36;
-}
-
-QRadioButton::indicator:checked, QCheckBox::indicator:checked {
-    background-color: #2196f3;
-    border: 2px solid #1976d2;
-}
-
-QRadioButton::indicator:hover, QCheckBox::indicator:hover {
-    border: 2px solid #2196f3;
-}
-
-QLabel {
-    color: #e8eaed;
-}
-"""
+def load_stylesheet(theme_name: str) -> str:
+    """Load stylesheet from themes directory."""
+    # 取得模組所在目錄 (modules/presentation/qt)
+    # 專案根目錄在 ../../../
+    current_dir = Path(__file__).parent
+    project_root = current_dir.parent.parent.parent
+    theme_path = project_root / "themes" / f"{theme_name}.qss"
+    
+    try:
+        if theme_path.exists():
+            with open(theme_path, "r", encoding="utf-8") as f:
+                qss = f.read()
+                logger.info(f"Loaded theme from {theme_path}")
+                return qss
+        else:
+            logger.warning(f"Theme file not found: {theme_path}")
+            # Fallback: try relative to cwd if running from root
+            cwd_theme_path = Path("themes") / f"{theme_name}.qss"
+            if cwd_theme_path.exists():
+                with open(cwd_theme_path, "r", encoding="utf-8") as f:
+                    qss = f.read()
+                    logger.info(f"Loaded theme from {cwd_theme_path}")
+                    return qss
+            return ""
+    except Exception as e:
+        logger.error(f"Error loading theme {theme_name}: {e}")
+        return ""
 
 
 def apply_theme(widget, theme_name: str = "dark"):
@@ -246,7 +46,8 @@ def apply_theme(widget, theme_name: str = "dark"):
         widget: The widget to apply the theme to
         theme_name: Either "light" or "dark"
     """
-    if theme_name.lower() == "light":
-        widget.setStyleSheet(LIGHT_THEME)
+    stylesheet = load_stylesheet(theme_name.lower())
+    if stylesheet:
+        widget.setStyleSheet(stylesheet)
     else:
-        widget.setStyleSheet(DARK_THEME)
+        logger.error(f"Failed to load theme: {theme_name}")

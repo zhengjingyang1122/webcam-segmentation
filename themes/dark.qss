@@ -1,0 +1,200 @@
+/* Dark Theme */
+QWidget {
+    background-color: #1b1e23;
+    color: #e8eaed;
+    font-size: 12px;
+}
+
+QMainWindow {
+    background-color: #1b1e23;
+}
+
+QGroupBox {
+    margin-top: 10px;
+    padding: 8px;
+    border: 1px solid #3a3f47;
+    border-radius: 8px;
+    background-color: #1f2227;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    color: #cfd8dc;
+    font-weight: 600;
+}
+
+QPushButton {
+    padding: 8px 12px;
+    border: 1px solid #3a3f47;
+    border-radius: 6px;
+    background: #2b2f36;
+    color: #e8eaed;
+    font-weight: 500;
+}
+
+QPushButton:hover {
+    background: #333844;
+}
+
+QPushButton:pressed {
+    background: #3a3f47;
+}
+
+QPushButton:disabled {
+    background: #1f2227;
+    color: #5f6368;
+    border: 1px solid #3a3f47;
+}
+
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    border: 1px solid #3a3f47;
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: #1b1e23;
+    color: #e8eaed;
+}
+
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid #4285f4;
+}
+
+QMenuBar {
+    background-color: #1b1e23;
+    color: #e8eaed;
+    border-bottom: 1px solid #3a3f47;
+}
+
+QMenuBar::item {
+    padding: 6px 12px;
+    background-color: transparent;
+}
+
+QMenuBar::item:selected {
+    background-color: #2b2f36;
+}
+
+QMenu {
+    background-color: #1b1e23;
+    color: #e8eaed;
+    border: 1px solid #3a3f47;
+}
+
+QMenu::item {
+    padding: 6px 24px;
+}
+
+QMenu::item:selected {
+    background-color: #2b2f36;
+}
+
+QDockWidget {
+    color: #e8eaed;
+}
+
+QDockWidget::title {
+    background-color: #2b2f36;
+    padding: 6px;
+    border-bottom: 1px solid #3a3f47;
+}
+
+QTreeView, QListView {
+    background-color: #1b1e23;
+    color: #e8eaed;
+    border: 1px solid #3a3f47;
+}
+
+QTreeView::item:selected, QListView::item:selected {
+    background-color: #4285f4;
+    color: #ffffff;
+}
+
+QStatusBar {
+    background-color: #23262e;
+    color: #e8eaed;
+    border-top: 1px solid #3a3f47;
+}
+
+QStatusBar QLabel {
+    color: #e8eaed;
+}
+
+QRadioButton, QCheckBox {
+    color: #e8eaed;
+    spacing: 5px;
+}
+
+/* CheckBox 深色主題樣式 - 結構與淺色一致 (16px, 1px border) */
+/* CheckBox 樣式 (深色主題) - 圓角方框 */
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #5f6368;
+    background-color: #2b2f36;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #2196f3;
+    border: 1px solid #1976d2;
+}
+
+QCheckBox::indicator:hover {
+    border: 1px solid #2196f3;
+}
+
+/* RadioButton 樣式 (深色主題) - 圓角方框 (與 CheckBox 一致) */
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+}
+
+QRadioButton::indicator:unchecked {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #5f6368;
+    background-color: #2b2f36;
+}
+
+QRadioButton::indicator:unchecked:hover {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #2196f3;
+    background-color: #2b2f36;
+}
+
+QRadioButton::indicator:checked {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #1976d2;
+    background-color: #2196f3;
+}
+
+QRadioButton::indicator:checked:hover {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #1976d2;
+    background-color: #2196f3;
+}
+
+QProgressBar {
+    border: 1px solid #3a3f47;
+    border-radius: 6px;
+    text-align: center;
+    background-color: #1b1e23;
+}
+
+QProgressBar::chunk {
+    background-color: #2196f3;
+    border-radius: 4px;
+}
+
+QLabel {
+    color: #e8eaed;
+}
