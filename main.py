@@ -27,17 +27,17 @@ class SegmentationLauncher(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("影像標註工具 By Coffee☕ v1.0.0")
-        self.resize(600, 200)
+        self.resize(600, 250)
         
         self.sam = None
-        self.viewer = None
+        self._active_viewers = []  # Track active viewer windows
         self.current_theme = "dark"  # Track current theme
         
         # Model selection mapping
         self.model_files = {
-            "SAM-B (Fast)": ("sam_vit_b_01ec64.pth", "vit_b"),
-            "SAM-L (Balanced)": ("sam_vit_l_0b3195.pth", "vit_l"),
-            "SAM-H (Best Quality)": ("sam_vit_h_4b8939.pth", "vit_h"),
+            "SAM-B (Fast)": ("sam_vit_b_01ec64.pth", "vit_b", "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"),
+            "SAM-L (Balanced)": ("sam_vit_l_0b3195.pth", "vit_l", "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth"),
+            "SAM-H (Best Quality)": ("sam_vit_h_4b8939.pth", "vit_h", "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"),
         }
         
         # Create menu bar
@@ -48,10 +48,19 @@ class SegmentationLauncher(QMainWindow):
         
         # Build UI
         self._build_ui()
+
+    def closeEvent(self, event):
+        """Override close event to prevent closing if viewers are active."""
+        if self._active_viewers:
+            QMessageBox.warning(self, "警告", "請先關閉所有分割視窗後再結束程式。")
+            event.ignore()
+        else:
+            event.accept()
     
     def _build_ui(self):
         """Build the launcher UI."""
         from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QStyle
         
         central = QWidget()
         main_layout = QVBoxLayout()
@@ -87,43 +96,58 @@ class SegmentationLauncher(QMainWindow):
         
         # 主要內容區域
         content_layout = QVBoxLayout()
-        content_layout.setSpacing(20)
+        content_layout.setSpacing(15)
         content_layout.setContentsMargins(20, 10, 20, 20)
         
         # Welcome label
-        label = QLabel("歡迎使用影像標註工具\n\n請選擇模型並從「檔案」選單選擇要分割的影像")
+        label = QLabel("歡迎使用影像標註工具\n\n請選擇模型並設定執行參數")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("font-size: 14px;")
         content_layout.addWidget(label)
         
-        # Model selection group
-        model_group = QGroupBox("模型選擇")
-        model_layout = QHBoxLayout()
+        # Settings group (Model & Device)
+        settings_group = QGroupBox("系統設定")
+        settings_layout = QHBoxLayout()
         
+        # Model
         model_label = QLabel("SAM 模型:")
         self.model_combo = QComboBox()
         self.model_combo.addItems(list(self.model_files.keys()))
         self.model_combo.setCurrentIndex(2)  # Default to SAM-H
         
-        model_layout.addWidget(model_label)
-        model_layout.addWidget(self.model_combo, 1)
-        model_group.setLayout(model_layout)
+        # Device
+        device_label = QLabel("運算裝置:")
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(["Auto (自動)", "GPU (CUDA)", "CPU"])
+        self.device_combo.setToolTip("優先使用 GPU 加速，若發生記憶體不足(OOM)會自動切換至 CPU")
         
-        content_layout.addWidget(model_group)
+        settings_layout.addWidget(model_label)
+        settings_layout.addWidget(self.model_combo, 2)
+        settings_layout.addWidget(device_label)
+        settings_layout.addWidget(self.device_combo, 1)
+        settings_group.setLayout(settings_layout)
+        
+        content_layout.addWidget(settings_group)
         
         # Path input group
-        path_group = QGroupBox("快速路徑")
+        path_group = QGroupBox("快速執行")
         path_layout = QVBoxLayout()
+        path_layout.setSpacing(10)
         
         # Image path
         img_path_layout = QHBoxLayout()
-        img_path_label = QLabel("影像路徑:")
+        img_path_label = QLabel("📄") # Icon for Image Path
+        img_path_label.setToolTip("單一影像路徑")
         self.img_path_edit = QLineEdit()
         self.img_path_edit.setPlaceholderText("選擇單一影像檔案...")
         self.img_path_edit.setText(str(Path.home() / "Pictures"))
-        btn_browse_img = QPushButton("瀏覽...")
+        
+        btn_browse_img = QPushButton("...")
+        btn_browse_img.setFixedWidth(30)
         btn_browse_img.clicked.connect(self._browse_image_path)
-        btn_open_img = QPushButton("開啟影像")
+        
+        btn_open_img = QPushButton("🖼️ 分割影像") # Icon for Action
+        btn_open_img.setToolTip("執行單一影像分割")
         btn_open_img.clicked.connect(self._open_image_from_path)
         
         img_path_layout.addWidget(img_path_label)
@@ -133,13 +157,18 @@ class SegmentationLauncher(QMainWindow):
         
         # Folder path
         folder_path_layout = QHBoxLayout()
-        folder_path_label = QLabel("資料夾路徑:")
+        folder_path_label = QLabel("📁") # Icon for Folder Path
+        folder_path_label.setToolTip("資料夾路徑")
         self.folder_path_edit = QLineEdit()
         self.folder_path_edit.setPlaceholderText("選擇包含影像的資料夾...")
         self.folder_path_edit.setText(str(Path.home() / "Pictures"))
-        btn_browse_folder = QPushButton("瀏覽...")
+        
+        btn_browse_folder = QPushButton("...")
+        btn_browse_folder.setFixedWidth(30)
         btn_browse_folder.clicked.connect(self._browse_folder_path)
-        btn_open_folder = QPushButton("開啟資料夾")
+        
+        btn_open_folder = QPushButton("📂 批次分割") # Icon for Action
+        btn_open_folder.setToolTip("執行資料夾批次分割")
         btn_open_folder.clicked.connect(self._open_folder_from_path)
         
         folder_path_layout.addWidget(folder_path_label)
@@ -193,26 +222,86 @@ class SegmentationLauncher(QMainWindow):
         """Apply theme to launcher and viewer if open."""
         self.current_theme = theme_name
         apply_theme(self, theme_name)
-        if self.viewer:
-            apply_theme(self.viewer, theme_name)
+        for viewer in self._active_viewers:
+            apply_theme(viewer, theme_name)
     
+    def _check_and_download_model(self, model_path: Path, url: str) -> bool:
+        """Check if model exists, if not, ask user to download."""
+        if model_path.exists():
+            return True
+            
+        reply = QMessageBox.question(
+            self, 
+            "模型缺失", 
+            f"找不到模型檔案：{model_path.name}\n\n是否要現在下載？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.No:
+            return False
+            
+        # Download logic
+        try:
+            import urllib.request
+            from PySide6.QtWidgets import QProgressDialog
+            
+            progress = QProgressDialog(f"正在下載 {model_path.name}...", "取消", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setAutoClose(True)
+            progress.show()
+            
+            def report_hook(block_num, block_size, total_size):
+                if progress.wasCanceled():
+                    raise InterruptedError("Download canceled")
+                downloaded = block_num * block_size
+                if total_size > 0:
+                    percent = int(downloaded * 100 / total_size)
+                    progress.setValue(percent)
+            
+            # Ensure models directory exists
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            urllib.request.urlretrieve(url, str(model_path), report_hook)
+            return True
+            
+        except InterruptedError:
+            QMessageBox.warning(self, "下載取消", "模型下載已取消。")
+            if model_path.exists():
+                model_path.unlink() # Remove partial file
+            return False
+        except Exception as e:
+            logger.error(f"下載模型失敗: {e}")
+            QMessageBox.critical(self, "下載失敗", f"無法下載模型：{e}")
+            if model_path.exists():
+                model_path.unlink()
+            return False
+
     def _ensure_sam_loaded(self) -> bool:
         """Load SAM model if not already loaded."""
         # Get selected model
         selected = self.model_combo.currentText()
-        model_file, model_type = self.model_files[selected]
+        model_file, model_type, model_url = self.model_files[selected]
         
-        # 檢查是否需要重新載入（模型類型改變）
+        # Get selected device
+        device_idx = self.device_combo.currentIndex()
+        device_map = {0: "auto", 1: "cuda", 2: "cpu"}
+        device = device_map.get(device_idx, "auto")
+        
+        # 檢查是否需要重新載入（模型類型或裝置改變）
         if self.sam is not None:
-            if hasattr(self.sam, 'model_type') and self.sam.model_type == model_type:
+            # Check if model type matches
+            type_match = hasattr(self.sam, 'model_type') and self.sam.model_type == model_type
+            # Check if requested device matches
+            device_match = hasattr(self.sam, 'requested_device') and self.sam.requested_device == device
+            
+            if type_match and device_match:
                 return True
             else:
-                # 模型類型改變，需要卸載舊模型
-                logger.info(f"模型類型改變，卸載舊模型...")
+                # 模型類型或裝置改變，需要卸載舊模型
+                logger.info(f"設定改變，重新載入模型...")
                 try:
                     self.sam.unload()
                     self.sam = None
-                    # 強制垃圾回收
                     import gc
                     gc.collect()
                     if torch.cuda.is_available():
@@ -224,8 +313,8 @@ class SegmentationLauncher(QMainWindow):
         base_path = Path(get_base_path())
         model_path = base_path / "models" / model_file
         
-        if not model_path.exists():
-            QMessageBox.critical(self, "錯誤", f"找不到 SAM 模型: {model_path}\n請先下載模型檔案。")
+        # Check and download
+        if not self._check_and_download_model(model_path, model_url):
             return False
         
         try:
@@ -235,11 +324,11 @@ class SegmentationLauncher(QMainWindow):
             progress.show()
             QApplication.processEvents()
             
-            self.sam = SamEngine(model_path, model_type=model_type, device="cuda")
+            self.sam = SamEngine(model_path, model_type=model_type, device=device)
             self.sam.load()
             
             progress.close()
-            logger.info(f"成功載入模型: {model_type}")
+            logger.info(f"成功載入模型: {model_type} on {self.sam.device}")
             return True
         except Exception as e:
             logger.error(f"載入 SAM 模型失敗: {e}", exc_info=True)
@@ -353,7 +442,7 @@ class SegmentationLauncher(QMainWindow):
                 pred_iou_thresh=pred_iou_thresh
             )
         
-        self.viewer = SegmentationViewer(
+        viewer = SegmentationViewer(
             None,
             image_paths,
             compute_masks,
@@ -361,9 +450,25 @@ class SegmentationLauncher(QMainWindow):
         )
         
         # Apply current theme to viewer
-        apply_theme(self.viewer, self.current_theme)
+        apply_theme(viewer, self.current_theme)
         
-        self.viewer.show()
+        # Window management: Keep launcher open
+        viewer.show()
+        
+        # Track viewer
+        self._active_viewers.append(viewer)
+        
+        # Remove from list when closed
+        # Note: SegmentationViewer has 'closed' signal we added
+        if hasattr(viewer, 'closed'):
+            viewer.closed.connect(lambda: self._on_viewer_closed(viewer))
+        else:
+            viewer.destroyed.connect(lambda: self._on_viewer_closed(viewer))
+            
+    def _on_viewer_closed(self, viewer):
+        """Handle viewer closing."""
+        if viewer in self._active_viewers:
+            self._active_viewers.remove(viewer)
 
 
 def main():

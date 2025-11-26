@@ -21,16 +21,39 @@ class SamEngine:
     operations. The engine can also unload the model to release GPU memory.
     """
 
-    def __init__(self, ckpt: Path, model_type: str = "vit_h", device: Optional[str] = None):
+    def __init__(self, ckpt: Path, model_type: str = "vit_h", device: str = "auto"):
         self.ckpt = Path(ckpt)
         self.model_type = model_type
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.requested_device = device
+        self.device = self._get_device(device)
         self._sam = None
+
+    def _get_device(self, device_mode: str) -> str:
+        """Determine the actual device to use based on mode."""
+        if device_mode == "cpu":
+            return "cpu"
+        elif device_mode == "cuda":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        else:  # auto
+            return "cuda" if torch.cuda.is_available() else "cpu"
 
     def _ensure_loaded(self) -> None:
         if self._sam is None:
-            self._sam = sam_model_registry[self.model_type](checkpoint=str(self.ckpt))
-            self._sam.to(self.device)
+            try:
+                self._load_model()
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower() and self.device == "cuda":
+                    logger.warning("CUDA OOM during model load. Switching to CPU...")
+                    self.device = "cpu"
+                    torch.cuda.empty_cache()
+                    self._load_model()
+                else:
+                    raise e
+
+    def _load_model(self):
+        logger.info(f"Loading SAM model ({self.model_type}) on {self.device}...")
+        self._sam = sam_model_registry[self.model_type](checkpoint=str(self.ckpt))
+        self._sam.to(self.device)
 
     def auto_masks_from_image(self, img_path: Path, points_per_side: int = 32, pred_iou_thresh: float = 0.88):
         """Generate masks for a single image.
@@ -54,14 +77,28 @@ class SamEngine:
         if bgr is None or bgr.size == 0:
             raise FileNotFoundError(f"讀取影像失敗，請確認檔案存在且可讀: {img_path}")
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        
+        try:
+            return self._generate_masks(rgb, points_per_side, pred_iou_thresh)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and self.device == "cuda":
+                logger.warning("CUDA OOM during inference. Switching to CPU and retrying...")
+                self.device = "cpu"
+                # Move model to CPU
+                self._sam.to("cpu")
+                torch.cuda.empty_cache()
+                return self._generate_masks(rgb, points_per_side, pred_iou_thresh)
+            else:
+                raise e
+
+    def _generate_masks(self, rgb, points_per_side, pred_iou_thresh):
         amg = SamAutomaticMaskGenerator(
             self._sam, points_per_side=points_per_side, pred_iou_thresh=pred_iou_thresh
         )
         ms = amg.generate(rgb)
         masks = [m["segmentation"].astype(np.uint8) for m in ms]
         scores = [float(m.get("predicted_iou", 0.0)) for m in ms]
-        return bgr, masks, scores
-
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), masks, scores
     def auto_masks_from_video_first_frame(self, video_path: Path, **amg_kwargs):
         """Generate masks for the first frame of a video."""
         cap = cv2.VideoCapture(str(video_path))

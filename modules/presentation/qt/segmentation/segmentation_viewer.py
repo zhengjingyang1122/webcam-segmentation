@@ -217,11 +217,17 @@ class ImageView(QGraphicsView):
         return img_x, img_y
 
 
-# ---------- Main viewer ----------
-
-
 class SegmentationViewer(QMainWindow):
     """Main window for the segmentation viewer, allowing interactive mask selection and saving."""
+    
+    # Signal emitted when the window is closed
+    closed = Signal()
+
+    def closeEvent(self, event):
+        """Handle window close event."""
+        self.closed.emit()
+        super().closeEvent(event)
+
     def __init__(
         self,
         parent: Optional[QWidget],
@@ -231,10 +237,11 @@ class SegmentationViewer(QMainWindow):
         ],
         params_defaults: Optional[Dict[str, float]] = None,
         title: str = "分割檢視",
-        path_manager: Optional["PathManager"] = None,  # 注入 PathManager
+        path_manager: Optional["PathManager"] = None,
     ) -> None:
         super().__init__(parent)
         print("DEBUG: SegmentationViewer initialized (v2)")
+
         self.setWindowTitle(title)
         self.setWindowFlag(Qt.Window, True)
         self.setWindowModality(Qt.NonModal)
@@ -884,16 +891,11 @@ class SegmentationViewer(QMainWindow):
         else:
             self._save_indices(sorted(self.selected_indices))
 
-    def _save_one(self, idx: int) -> None:
-        """Save a single mask index."""
-        self._save_indices([idx])
-
     def _save_union(self, indices: List[int]) -> None:
         """Save the union of multiple masks as a single image."""
         path = self.image_paths[self.idx]
         bgr, masks, _ = self.cache[path]
-        source_name = Path(path).stem
-
+        
         # 使用使用者設定的輸出路徑，或預設為原影像同層資料夾
         custom_path = self.output_path_edit.text().strip()
         if custom_path:
@@ -904,18 +906,14 @@ class SegmentationViewer(QMainWindow):
         # 確保目錄存在
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        if not out_dir:
-            self.status.message("取消儲存")
-            return
-
         H, W = bgr.shape[:2]
         union_mask = np.zeros((H, W), dtype=np.uint8)
         for i in indices:
             if 0 <= i < len(masks):
                 union_mask = np.maximum(union_mask, (masks[i] > 0).astype(np.uint8))
 
-        base_name = "union"
-
+        base_name = f"{path.stem}_union"
+        
         # 準備輸出影像 (BGRA)
         bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
         bgra[:, :, 3] = union_mask * 255
@@ -933,68 +931,212 @@ class SegmentationViewer(QMainWindow):
             # 原圖大小
             crop = bgra
             img_h, img_w = H, W
-        # 使用使用者設定的輸出路徑，或預設為原影像同層資料夾
+            x, y, w, h = compute_bbox(union_mask > 0)
+            boxes = [(x, y, w, h)]
+            poly = self._compute_polygon(union_mask)
+            polys = [poly]
+
+        # 取得選擇的格式
+        fmt = self.format_combo.currentText().lower()
+        if fmt == "jpg":
+            # JPG 不支援透明度，轉回 BGR
+            save_img = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+            ext = ".jpg"
+        elif fmt == "bmp":
+            save_img = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+            ext = ".bmp"
+        else:
+            save_img = crop
+            ext = ".png"
+
+        save_path = out_dir / f"{base_name}{ext}"
+        ok, buf = cv2.imencode(ext, save_img)
+        if ok:
+            save_path.write_bytes(buf.tobytes())
+            
+            # 寫出各種標註格式
+            self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
+            self._write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h)
+            self._write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name)
+            self._write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name)
+            
+            QMessageBox.information(self, "完成", f"已儲存聯集影像至：\n{save_path}")
+            self.status.message("儲存完成")
+        else:
+            QMessageBox.warning(self, "失敗", "影像編碼失敗")
+
+    def _save_indices(self, indices: List[int]) -> None:
+        """Save selected masks as individual images."""
+        path = self.image_paths[self.idx]
+        bgr, masks, _ = self.cache[path]
+        
         custom_path = self.output_path_edit.text().strip()
         if custom_path:
             out_dir = Path(custom_path)
         else:
             out_dir = Path(path).parent
         
-        # 確保目錄存在
         out_dir.mkdir(parents=True, exist_ok=True)
-        source_name = Path(path).stem
-
-        if not out_dir:
-            self.status.message("取消儲存")
-            return
-
-        saved = 0
+        
+        saved_count = 0
         H, W = bgr.shape[:2]
+        
+        # 取得選擇的格式
+        fmt = self.format_combo.currentText().lower()
+        ext = f".{fmt}"
 
         for i in indices:
             if not (0 <= i < len(masks)):
                 continue
             m = masks[i] > 0
-
+            
             # 準備輸出影像 (BGRA)
             bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
             bgra[:, :, 3] = m.astype(np.uint8) * 255
-
-            base_name = f"{i:03d}"
-
+            
+            base_name = f"{path.stem}_{i:03d}"
+            
             if self.rb_bbox.isChecked():
-                # 裁成該物件的最小外接矩形
                 x, y, w, h = compute_bbox(m)
                 crop = bgra[y : y + h, x : x + w]
                 img_h, img_w = h, w
-                # 對應的標註：以裁後影像為座標系
                 boxes = [(0, 0, w, h)]
                 poly = self._compute_polygon(m[y : y + h, x : x + w])
                 polys = [poly]
             else:
-                # 原圖大小
                 crop = bgra
                 img_h, img_w = H, W
                 x, y, w, h = compute_bbox(m)
                 boxes = [(x, y, w, h)]
                 poly = self._compute_polygon(m)
                 polys = [poly]
-
-            # 寫 PNG
-            ok, buf = cv2.imencode(".png", crop)
-            if ok:
-                (out_dir / f"{base_name}.png").write_bytes(buf.tobytes())
-                saved += 1
-                # 寫標註 (依勾選)
-                self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
+            
+            if fmt in ["jpg", "bmp"]:
+                save_img = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
             else:
-                logger.error("PNG encode 失敗: %s", out_dir / f"{base_name}.png")
-
-        if saved:
-            QMessageBox.information(self, "完成", f"已儲存 {saved} 個物件")
-            self.status.message("完成")
+                save_img = crop
+                
+            save_path = out_dir / f"{base_name}{ext}"
+            ok, buf = cv2.imencode(ext, save_img)
+            if ok:
+                save_path.write_bytes(buf.tobytes())
+                saved_count += 1
+                
+                # 寫出各種標註格式
+                self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
+                self._write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h)
+                self._write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name)
+                self._write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name)
+        
+        if saved_count > 0:
+            QMessageBox.information(self, "完成", f"已儲存 {saved_count} 個物件影像")
+            self.status.message(f"已儲存 {saved_count} 個物件")
         else:
-            QMessageBox.warning(self, "未儲存", "沒有任何檔案被寫出")
+            QMessageBox.warning(self, "提示", "沒有儲存任何檔案")
+
+    def _write_coco_json(self, out_dir, base_name, boxes, polys, w, h):
+        """Export to COCO JSON format."""
+        if not getattr(self, "chk_coco", None) or not self.chk_coco.isChecked():
+            return
+            
+        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
+        
+        coco_data = {
+            "images": [{"id": 1, "file_name": f"{base_name}.png", "width": w, "height": h}],
+            "annotations": [],
+            "categories": [{"id": cls_id, "name": f"class_{cls_id}"}]
+        }
+        
+        for i, (box, poly) in enumerate(zip(boxes, polys)):
+            x, y, bw, bh = box
+            segmentation = []
+            if poly is not None and len(poly) > 0:
+                segmentation = [poly.flatten().tolist()]
+                
+            ann = {
+                "id": i + 1,
+                "image_id": 1,
+                "category_id": cls_id,
+                "bbox": [x, y, bw, bh],
+                "segmentation": segmentation,
+                "area": bw * bh,
+                "iscrowd": 0
+            }
+            coco_data["annotations"].append(ann)
+            
+        (out_dir / f"{base_name}_coco.json").write_text(json.dumps(coco_data, indent=2), encoding="utf-8")
+
+    def _write_voc_xml(self, out_dir, base_name, boxes, w, h, filename):
+        """Export to Pascal VOC XML format."""
+        if not getattr(self, "chk_voc", None) or not self.chk_voc.isChecked():
+            return
+            
+        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
+        cls_name = f"class_{cls_id}"
+        
+        import xml.etree.ElementTree as ET
+        
+        root = ET.Element("annotation")
+        ET.SubElement(root, "folder").text = out_dir.name
+        ET.SubElement(root, "filename").text = filename
+        ET.SubElement(root, "path").text = str(out_dir / filename)
+        
+        size = ET.SubElement(root, "size")
+        ET.SubElement(size, "width").text = str(w)
+        ET.SubElement(size, "height").text = str(h)
+        ET.SubElement(size, "depth").text = "3"
+        
+        for x, y, bw, bh in boxes:
+            obj = ET.SubElement(root, "object")
+            ET.SubElement(obj, "name").text = cls_name
+            ET.SubElement(obj, "pose").text = "Unspecified"
+            ET.SubElement(obj, "truncated").text = "0"
+            ET.SubElement(obj, "difficult").text = "0"
+            
+            bndbox = ET.SubElement(obj, "bndbox")
+            ET.SubElement(bndbox, "xmin").text = str(x)
+            ET.SubElement(bndbox, "ymin").text = str(y)
+            ET.SubElement(bndbox, "xmax").text = str(x + bw)
+            ET.SubElement(bndbox, "ymax").text = str(y + bh)
+            
+        tree = ET.ElementTree(root)
+        tree.write(out_dir / f"{base_name}.xml", encoding="utf-8", xml_declaration=True)
+
+    def _write_labelme_json(self, out_dir, base_name, polys, w, h, filename):
+        """Export to LabelMe JSON format."""
+        if not getattr(self, "chk_labelme", None) or not self.chk_labelme.isChecked():
+            return
+            
+        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
+        cls_name = f"class_{cls_id}"
+        
+        shapes = []
+        for poly in polys:
+            if poly is not None and len(poly) > 0:
+                shape = {
+                    "label": cls_name,
+                    "points": poly.tolist(),
+                    "group_id": None,
+                    "shape_type": "polygon",
+                    "flags": {}
+                }
+                shapes.append(shape)
+                
+        data = {
+            "version": "4.5.6",
+            "flags": {},
+            "shapes": shapes,
+            "imagePath": filename,
+            "imageData": None,
+            "imageHeight": h,
+            "imageWidth": w
+        }
+        
+        (out_dir / f"{base_name}_labelme.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _save_one(self, idx: int) -> None:
+        """Save a single mask index."""
+        self._save_indices([idx])
 
     # ---- event filter on view viewport ----
     def eventFilter(self, obj, event):
