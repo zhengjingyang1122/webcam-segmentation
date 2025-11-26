@@ -1,7 +1,7 @@
 import sys
 import logging
 from pathlib import Path
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QComboBox, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QGroupBox
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QComboBox, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QGroupBox, QLineEdit, QPushButton
 from PySide6.QtGui import QAction
 from modules.infrastructure.vision.sam_engine import SamEngine
 from modules.presentation.qt.segmentation.segmentation_viewer import SegmentationViewer
@@ -70,6 +70,48 @@ class SegmentationLauncher(QMainWindow):
         model_group.setLayout(model_layout)
         
         layout.addWidget(model_group)
+        
+        # Path input group
+        path_group = QGroupBox("快速路徑")
+        path_layout = QVBoxLayout()
+        
+        # Image path
+        img_path_layout = QHBoxLayout()
+        img_path_label = QLabel("影像路徑:")
+        self.img_path_edit = QLineEdit()
+        self.img_path_edit.setPlaceholderText("選擇單一影像檔案...")
+        self.img_path_edit.setText(str(Path.home() / "Pictures"))
+        btn_browse_img = QPushButton("瀏覽...")
+        btn_browse_img.clicked.connect(self._browse_image_path)
+        btn_open_img = QPushButton("開啟影像")
+        btn_open_img.clicked.connect(self._open_image_from_path)
+        
+        img_path_layout.addWidget(img_path_label)
+        img_path_layout.addWidget(self.img_path_edit, 1)
+        img_path_layout.addWidget(btn_browse_img)
+        img_path_layout.addWidget(btn_open_img)
+        
+        # Folder path
+        folder_path_layout = QHBoxLayout()
+        folder_path_label = QLabel("資料夾路徑:")
+        self.folder_path_edit = QLineEdit()
+        self.folder_path_edit.setPlaceholderText("選擇包含影像的資料夾...")
+        self.folder_path_edit.setText(str(Path.home() / "Pictures"))
+        btn_browse_folder = QPushButton("瀏覽...")
+        btn_browse_folder.clicked.connect(self._browse_folder_path)
+        btn_open_folder = QPushButton("開啟資料夾")
+        btn_open_folder.clicked.connect(self._open_folder_from_path)
+        
+        folder_path_layout.addWidget(folder_path_label)
+        folder_path_layout.addWidget(self.folder_path_edit, 1)
+        folder_path_layout.addWidget(btn_browse_folder)
+        folder_path_layout.addWidget(btn_open_folder)
+        
+        path_layout.addLayout(img_path_layout)
+        path_layout.addLayout(folder_path_layout)
+        path_group.setLayout(path_layout)
+        
+        layout.addWidget(path_group)
         layout.addStretch()
         
         central.setLayout(layout)
@@ -144,6 +186,68 @@ class SegmentationLauncher(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "錯誤", f"載入 SAM 模型失敗: {e}")
             return False
+    
+    def _browse_image_path(self):
+        """瀏覽並選擇影像檔案路徑"""
+        f, _ = QFileDialog.getOpenFileName(
+            self, 
+            "選擇影像", 
+            self.img_path_edit.text() if self.img_path_edit.text() else str(Path.home()), 
+            "Images (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if f:
+            self.img_path_edit.setText(f)
+    
+    def _browse_folder_path(self):
+        """瀏覽並選擇資料夾路徑"""
+        folder = QFileDialog.getExistingDirectory(
+            self, 
+            "選擇資料夾", 
+            self.folder_path_edit.text() if self.folder_path_edit.text() else str(Path.home())
+        )
+        if folder:
+            self.folder_path_edit.setText(folder)
+    
+    def _open_image_from_path(self):
+        """從路徑輸入欄位開啟影像"""
+        if not self._ensure_sam_loaded():
+            return
+        
+        path_text = self.img_path_edit.text().strip()
+        if not path_text:
+            QMessageBox.information(self, "提示", "請先輸入或選擇影像路徑")
+            return
+        
+        img_path = Path(path_text)
+        if not img_path.exists() or not img_path.is_file():
+            QMessageBox.warning(self, "錯誤", f"找不到影像檔案：{path_text}")
+            return
+        
+        self._launch_viewer([img_path], f"分割檢視 - {img_path.name}")
+    
+    def _open_folder_from_path(self):
+        """從路徑輸入欄位開啟資料夾"""
+        if not self._ensure_sam_loaded():
+            return
+        
+        path_text = self.folder_path_edit.text().strip()
+        if not path_text:
+            QMessageBox.information(self, "提示", "請先輸入或選擇資料夾路徑")
+            return
+        
+        folder_path = Path(path_text)
+        if not folder_path.exists() or not folder_path.is_dir():
+            QMessageBox.warning(self, "錯誤", f"找不到資料夾：{path_text}")
+            return
+        
+        exts = {".png", ".jpg", ".jpeg", ".bmp"}
+        imgs = [p for p in sorted(folder_path.glob("*")) if p.is_file() and p.suffix.lower() in exts]
+        
+        if not imgs:
+            QMessageBox.information(self, "提示", "該資料夾內沒有支援格式的影像檔。")
+            return
+        
+        self._launch_viewer(imgs, f"分割檢視 - {folder_path.name}")
     
     def _open_image(self):
         """Open single image for segmentation."""

@@ -234,6 +234,9 @@ class SegmentationViewer(QMainWindow):
         self.setWindowTitle(title)
         self.setWindowFlag(Qt.Window, True)
         self.setWindowModality(Qt.NonModal)
+        
+        # 視窗最大化顯示
+        self.showMaximized()
 
         self.image_paths: List[Path] = list(image_paths)
         self.idx: int = 0
@@ -375,6 +378,9 @@ class SegmentationViewer(QMainWindow):
         self.status = StatusFooter.install(self)
         self._spawned_views: list[SegmentationViewer] = []
         self.status.message("準備就緒")
+        
+        # 設定選項顏色樣式（藍色表示選取）
+        self._apply_selection_styles()
 
         self._start_batch_processing()
 
@@ -414,6 +420,58 @@ class SegmentationViewer(QMainWindow):
             self.batch_progress.close()
         # Load the first image (now likely cached)
         self._load_current_image(recompute=False)
+    
+    def _apply_selection_styles(self):
+        """設定 RadioButton 和 CheckBox 的藍色選取樣式"""
+        # 藍色主題樣式
+        radio_style = """
+            QRadioButton::indicator:checked {
+                background-color: #2196F3;
+                border: 2px solid #1976D2;
+                border-radius: 7px;
+            }
+            QRadioButton::indicator:unchecked {
+                background-color: #424242;
+                border: 2px solid #666666;
+                border-radius: 7px;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QRadioButton:checked {
+                color: #2196F3;
+                font-weight: bold;
+            }
+        """
+        
+        checkbox_style = """
+            QCheckBox::indicator:checked {
+                background-color: #2196F3;
+                border: 2px solid #1976D2;
+            }
+            QCheckBox::indicator:unchecked {
+                background-color: #424242;
+                border: 2px solid #666666;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QCheckBox:checked {
+                color: #2196F3;
+                font-weight: bold;
+            }
+        """
+        
+        # 套用樣式到所有 RadioButton
+        for rb in [self.rb_full, self.rb_bbox, self.rb_mode_union, self.rb_mode_indiv, 
+                   self.rb_show_mask, self.rb_show_bbox]:
+            rb.setStyleSheet(radio_style)
+        
+        # 套用樣式到所有 CheckBox
+        for cb in [self.chk_yolo_det, self.chk_yolo_seg]:
+            cb.setStyleSheet(checkbox_style)
 
     # ---- load / recompute ----
 

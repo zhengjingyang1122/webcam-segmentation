@@ -103,6 +103,123 @@ python main.py
 
 ---
 
+## 程式動作流程
+
+```mermaid
+flowchart TD
+    Start([啟動應用程式]) --> Init[初始化主視窗]
+    Init --> SelectModel[選擇 SAM 模型]
+    SelectModel --> InputPath{輸入路徑方式}
+    
+    InputPath -->|選單| MenuOpen[檔案選單]
+    InputPath -->|快速路徑| QuickPath[路徑輸入欄位]
+    
+    MenuOpen --> OpenImage[開啟影像]
+    MenuOpen --> OpenFolder[開啟資料夾]
+    QuickPath --> OpenImage
+    QuickPath --> OpenFolder
+    
+    OpenImage --> LoadModel{模型已載入?}
+    OpenFolder --> LoadModel
+    
+    LoadModel -->|否| LoadSAM[載入 SAM 模型]
+    LoadModel -->|是| CheckCache{檢查快取}
+    LoadSAM --> CheckCache
+    
+    CheckCache -->|存在| LoadCache[載入快取遮罩]
+    CheckCache -->|不存在| Segment[執行分割]
+    
+    Segment --> SaveCache[儲存快取]
+    SaveCache --> ShowViewer[顯示分割檢視器]
+    LoadCache --> ShowViewer
+    
+    ShowViewer --> Interact[互動式選擇]
+    Interact --> Hover[滑鼠懸浮預覽]
+    Interact --> LeftClick[左鍵加入選取]
+    Interact --> RightClick[右鍵移除選取]
+    
+    Hover --> UpdateDisplay[更新顯示]
+    LeftClick --> UpdateDisplay
+    RightClick --> UpdateDisplay
+    
+    UpdateDisplay --> SaveChoice{儲存選擇}
+    SaveChoice -->|個別| SaveIndividual[儲存個別物件]
+    SaveChoice -->|聯集| SaveUnion[儲存聯集物件]
+    SaveChoice -->|下一張| NextImage[切換影像]
+    
+    SaveIndividual --> OutputPNG[輸出 PNG 檔案]
+    SaveUnion --> OutputPNG
+    NextImage --> CheckCache
+    
+    OutputPNG --> End([完成])
+```
+
+---
+
+## 系統架構
+
+```mermaid
+graph TB
+    subgraph "Presentation Layer 呈現層"
+        MainWindow[SegmentationLauncher<br/>主視窗]
+        SegViewer[SegmentationViewer<br/>分割檢視器]
+        ImageView[ImageView<br/>影像顯示元件]
+        StatusFooter[StatusFooter<br/>狀態列]
+        ProgressDialog[ThemedProgressDialog<br/>進度對話框]
+        ThemeManager[ThemeManager<br/>主題管理]
+    end
+    
+    subgraph "Infrastructure Layer 基礎設施層"
+        SAMEngine[SamEngine<br/>SAM 推論引擎]
+        SAMModel[Segment Anything Model<br/>分割模型]
+        LoggingSetup[LoggingSetup<br/>日誌系統]
+    end
+    
+    subgraph "Utilities 工具層"
+        Utils[Utils<br/>工具函數]
+        GetBasePath[GetBasePath<br/>路徑工具]
+    end
+    
+    subgraph "External Dependencies 外部依賴"
+        PySide6[PySide6<br/>Qt GUI 框架]
+        PyTorch[PyTorch<br/>深度學習框架]
+        OpenCV[OpenCV<br/>影像處理]
+        NumPy[NumPy<br/>數值計算]
+    end
+    
+    MainWindow --> SegViewer
+    MainWindow --> ThemeManager
+    MainWindow --> SAMEngine
+    
+    SegViewer --> ImageView
+    SegViewer --> StatusFooter
+    SegViewer --> ProgressDialog
+    SegViewer --> SAMEngine
+    SegViewer --> ThemeManager
+    
+    SAMEngine --> SAMModel
+    SAMEngine --> PyTorch
+    
+    SegViewer --> OpenCV
+    SegViewer --> NumPy
+    ImageView --> OpenCV
+    
+    MainWindow --> PySide6
+    SegViewer --> PySide6
+    StatusFooter --> PySide6
+    
+    MainWindow --> Utils
+    MainWindow --> GetBasePath
+    SAMEngine --> LoggingSetup
+    
+    style MainWindow fill:#2196F3,color:#fff
+    style SegViewer fill:#2196F3,color:#fff
+    style SAMEngine fill:#4CAF50,color:#fff
+    style SAMModel fill:#4CAF50,color:#fff
+```
+
+---
+
 ## SAM 模型
 
 ### 模型選擇
