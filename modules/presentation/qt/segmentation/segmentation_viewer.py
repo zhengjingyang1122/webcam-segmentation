@@ -379,6 +379,7 @@ class SegmentationViewer(QMainWindow):
         format_layout.addWidget(self.format_combo, 1)
         
         self.btn_save_selected = QPushButton("💾 儲存已選目標 (Ctrl+S)")
+        self.btn_save_all = QPushButton("💾 儲存全部目標")
         self.lbl_selected = QLabel("已選目標：0")
         self.lbl_selected.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -386,6 +387,7 @@ class SegmentationViewer(QMainWindow):
         lay_save.addLayout(output_path_layout)
         lay_save.addLayout(format_layout)
         lay_save.addWidget(self.btn_save_selected)
+        lay_save.addWidget(self.btn_save_all)
         lay_save.addWidget(self.lbl_selected)
         grp_save.setLayout(lay_save)
 
@@ -424,6 +426,7 @@ class SegmentationViewer(QMainWindow):
         self.btn_prev.clicked.connect(self._prev_image)
         self.btn_next.clicked.connect(self._next_image)
         self.btn_save_selected.clicked.connect(self._save_selected)
+        self.btn_save_all.clicked.connect(self._save_all)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.status = StatusFooter.install(self)
@@ -431,6 +434,30 @@ class SegmentationViewer(QMainWindow):
         self.status.message("準備就緒")
         
         self._start_batch_processing()
+    
+    def _save_all(self) -> None:
+        """Save all masks for the current image."""
+        if not self.image_paths:
+            return
+        path = self.image_paths[self.idx]
+        if path not in self.cache:
+            return
+        _, masks, _ = self.cache[path]
+        if not masks:
+            QMessageBox.information(self, "提示", "目前影像沒有任何分割目標")
+            return
+            
+        # Confirm with user
+        ret = QMessageBox.question(
+            self, "確認儲存", 
+            f"確定要儲存全部 {len(masks)} 個目標嗎？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if ret != QMessageBox.StandardButton.Yes:
+            return
+
+        # Reuse _save_indices logic
+        self._save_indices(list(range(len(masks))))
     
     def _create_menu_bar(self):
         """建立菜單欄"""
@@ -906,6 +933,9 @@ class SegmentationViewer(QMainWindow):
         # 確保目錄存在
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # [新增] 儲存標註狀態 (JSON)
+        self._save_annotations_json(path, out_dir)
+
         H, W = bgr.shape[:2]
         union_mask = np.zeros((H, W), dtype=np.uint8)
         for i in indices:
@@ -977,6 +1007,9 @@ class SegmentationViewer(QMainWindow):
             out_dir = Path(path).parent
         
         out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # [新增] 儲存標註狀態 (JSON)
+        self._save_annotations_json(path, out_dir)
         
         saved_count = 0
         H, W = bgr.shape[:2]
@@ -1079,7 +1112,7 @@ class SegmentationViewer(QMainWindow):
         root = ET.Element("annotation")
         ET.SubElement(root, "folder").text = out_dir.name
         ET.SubElement(root, "filename").text = filename
-        ET.SubElement(root, "path").text = str(out_dir / filename)
+        ET.SubElement(root, "path").text = filename  # 使用相對路徑 (僅檔名)
         
         size = ET.SubElement(root, "size")
         ET.SubElement(size, "width").text = str(w)
@@ -1211,6 +1244,21 @@ class SegmentationViewer(QMainWindow):
             QMessageBox.information(self, "提示", "尚未選擇任何目標")
             return
         self._save_union(sorted(self.selected_indices))
+
+    def _save_annotations_json(self, image_path: Path, out_dir: Path) -> None:
+        """Save current annotations (selected indices) to a JSON file."""
+        try:
+            data = {
+                "image_path": image_path.name,
+                "selected_indices": list(self.selected_indices)
+            }
+            # 儲存到與輸出影像相同的目錄，檔名為 [原始檔名]_annotations.json
+            save_path = out_dir / f"{image_path.stem}_annotations.json"
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"已儲存標註狀態: {save_path}")
+        except Exception as e:
+            logger.error(f"儲存標註狀態失敗: {e}")
 
     # [新增] 放在 SegmentationViewer 類別內其它私有方法旁
 

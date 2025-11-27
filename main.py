@@ -67,58 +67,64 @@ class SegmentationLauncher(QMainWindow):
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 頂部區域：標題 + 頭貼
-        top_widget = QWidget()
-        top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(20, 20, 20, 10)
-        
-        # 左側：標題
-        title_label = QLabel("SAM 影像標註工具")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold;")
-        top_layout.addWidget(title_label)
-        top_layout.addStretch()
-        
-        # 右側：作者頭貼
-        avatar_label = QLabel()
-        avatar_path = Path(get_base_path()) / "assets" / "Coffee.png"
-        if avatar_path.exists():
-            pixmap = QPixmap(str(avatar_path))
-            scaled_pixmap = pixmap.scaled(40, 40, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            avatar_label.setPixmap(scaled_pixmap)
-            avatar_label.setToolTip("作者: Coffee")
-        else:
-            avatar_label.setText("☕")
-            avatar_label.setStyleSheet("font-size: 24px;")
-        
-        top_layout.addWidget(avatar_label)
-        top_widget.setLayout(top_layout)
-        main_layout.addWidget(top_widget)
-        
         # 主要內容區域
         content_layout = QVBoxLayout()
         content_layout.setSpacing(15)
         content_layout.setContentsMargins(20, 10, 20, 20)
+
+        # 頂部區域：作者與歡迎訊息 (群組化)
+        author_group = QGroupBox("關於作者")
+        author_layout = QHBoxLayout()
+        author_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Welcome label
-        label = QLabel("歡迎使用影像標註工具\n\n請選擇模型並設定執行參數")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("font-size: 14px;")
-        content_layout.addWidget(label)
+        # 左側：頭貼
+        avatar_label = QLabel()
+        avatar_path = Path(get_base_path()) / "assets" / "Coffee.png"
+        if avatar_path.exists():
+            pixmap = QPixmap(str(avatar_path))
+            scaled_pixmap = pixmap.scaled(60, 60, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            avatar_label.setPixmap(scaled_pixmap)
+        else:
+            avatar_label.setText("☕")
+            avatar_label.setStyleSheet("font-size: 40px;")
+        
+        # 右側：文字訊息
+        # 右側：文字訊息
+        text_layout = QVBoxLayout()
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        
+        # Title 改為 Tip 形式 (設定在頭貼上)
+        avatar_label.setToolTip("Coffee ☕")
+        
+        msg_label = QLabel("Remember to stay focused and take breaks.")
+        msg_label.setStyleSheet("font-size: 16px; color: #888;")
+        msg_label.setWordWrap(False) # 不換行
+        msg_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        
+        text_layout.addWidget(msg_label)
+        
+        # 排版：頭貼固定最左，接著文字，右側彈簧
+        author_layout.addWidget(avatar_label)
+        author_layout.addLayout(text_layout)
+        author_layout.addStretch()
+        
+        author_group.setLayout(author_layout)
+        content_layout.addWidget(author_group)
         
         # Settings group (Model & Device)
         settings_group = QGroupBox("系統設定")
         settings_layout = QHBoxLayout()
         
         # Model
-        model_label = QLabel("SAM 模型:")
+        model_label = QLabel("模型:")
         self.model_combo = QComboBox()
         self.model_combo.addItems(list(self.model_files.keys()))
         self.model_combo.setCurrentIndex(2)  # Default to SAM-H
         
         # Device
-        device_label = QLabel("運算裝置:")
+        device_label = QLabel("運算:")
         self.device_combo = QComboBox()
-        self.device_combo.addItems(["Auto (自動)", "GPU (CUDA)", "CPU"])
+        self.device_combo.addItems(["Auto (自動)", "GPU", "CPU"])
         self.device_combo.setToolTip("優先使用 GPU 加速，若發生記憶體不足(OOM)會自動切換至 CPU")
         
         settings_layout.addWidget(model_label)
@@ -146,7 +152,7 @@ class SegmentationLauncher(QMainWindow):
         btn_browse_img.setFixedWidth(30)
         btn_browse_img.clicked.connect(self._browse_image_path)
         
-        btn_open_img = QPushButton("🖼️ 分割影像") # Icon for Action
+        btn_open_img = QPushButton("🖼️ 單一分割") # Icon for Action
         btn_open_img.setToolTip("執行單一影像分割")
         btn_open_img.clicked.connect(self._open_image_from_path)
         
@@ -216,7 +222,16 @@ class SegmentationLauncher(QMainWindow):
         act_dark.triggered.connect(lambda: self._apply_theme("dark"))
         
         view_menu.addAction(act_light)
+        view_menu.addAction(act_light)
         view_menu.addAction(act_dark)
+
+        # Help menu
+        help_menu = self.menuBar().addMenu("說明")
+        
+        act_help = QAction("使用說明", self)
+        act_help.triggered.connect(self._show_help)
+        
+        help_menu.addAction(act_help)
     
     def _apply_theme(self, theme_name: str):
         """Apply theme to launcher and viewer if open."""
@@ -469,6 +484,38 @@ class SegmentationLauncher(QMainWindow):
         """Handle viewer closing."""
         if viewer in self._active_viewers:
             self._active_viewers.remove(viewer)
+
+    def _show_help(self):
+        """Show help dialog."""
+        help_text = """
+        <h2>影像標註工具使用說明</h2>
+        <p><b>基本操作：</b></p>
+        <ul>
+            <li><b>左鍵點擊：</b> 選擇分割區域 (加入選取)</li>
+            <li><b>右鍵點擊：</b> 取消選擇分割區域 (移除選取)</li>
+            <li><b>滾輪：</b> 縮放影像</li>
+            <li><b>中鍵拖曳：</b> 移動影像</li>
+        </ul>
+        <p><b>快捷鍵：</b></p>
+        <ul>
+            <li><b>PageUp / PageDown：</b> 切換上一張 / 下一張影像</li>
+            <li><b>Ctrl + S：</b> 儲存目前已選取的目標</li>
+        </ul>
+        <p><b>功能說明：</b></p>
+        <ul>
+            <li><b>輸出裁切模式：</b> 選擇輸出僅包含物件的最小矩形或整張原圖。</li>
+            <li><b>輸出模式：</b>
+                <ul>
+                    <li><b>個別獨立：</b> 每個選取的物件存成單獨的檔案。</li>
+                    <li><b>疊加聯集：</b> 所有選取的物件合併成單一檔案。</li>
+                </ul>
+            </li>
+            <li><b>輸出標註格式：</b> 支援 YOLO, COCO, VOC, LabelMe 等多種格式。</li>
+        </ul>
+        <hr>
+        <p><i>Created by Coffee ☕</i></p>
+        """
+        QMessageBox.about(self, "使用說明", help_text)
 
 
 def main():

@@ -86,11 +86,35 @@ class StatusFooter(QStatusBar):
         # 科幻彈窗指標
         self._scifi: Optional[SciFiProgressDialog] = None
 
-        self._meta = QLabel("", self)
-        self._meta.setObjectName("StatusMetaLabel")
-        self._meta.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self._meta.setMinimumWidth(180)
-        self.addPermanentWidget(self._meta, 1)
+        # 資訊顯示區 (Resolution, Cursor, Mode, Count)
+        self._info_widget = QWidget(self)
+        self._info_layout = QHBoxLayout(self._info_widget)
+        self._info_layout.setContentsMargins(0, 0, 0, 0)
+        self._info_layout.setSpacing(15)
+
+        # 1. 解析度
+        self._lbl_res = QLabel("", self)
+        self._lbl_res.setMinimumWidth(80)
+        self._lbl_res.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_res.setStyleSheet("color: #aaaaaa;")
+        
+        # 2. 游標座標
+        self._lbl_cursor = QLabel("", self)
+        self._lbl_cursor.setMinimumWidth(100)
+        self._lbl_cursor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_cursor.setStyleSheet("color: #aaaaaa;")
+
+        # 3. 模式與數量
+        self._lbl_status = QLabel("", self)
+        self._lbl_status.setMinimumWidth(120)
+        self._lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_status.setStyleSheet("font-weight: bold; color: #e8eaed;")
+
+        self._info_layout.addWidget(self._lbl_res)
+        self._info_layout.addWidget(self._lbl_cursor)
+        self._info_layout.addWidget(self._lbl_status)
+        
+        self.addPermanentWidget(self._info_widget, 0)
 
         self._img_wh = None
         self._cur_xy = None
@@ -236,17 +260,24 @@ class StatusFooter(QStatusBar):
 
     # [修改] 以下方法以新版本覆蓋
     def _update_meta(self) -> None:
-        parts = []
+        # 1. 解析度
         if self._img_wh:
-            parts.append(f"{self._img_wh[0]}x{self._img_wh[1]}")
+            self._lbl_res.setText(f"{self._img_wh[0]} x {self._img_wh[1]}")
+        else:
+            self._lbl_res.setText("")
+            
+        # 2. 游標
         if self._cur_xy:
-            parts.append(f"({self._cur_xy[0]},{self._cur_xy[1]})")
+            self._lbl_cursor.setText(f"XY: {self._cur_xy[0]}, {self._cur_xy[1]}")
+        else:
+            self._lbl_cursor.setText("")
+            
+        # 3. 狀態 (模式 + 數量)
         if getattr(self, "_display_mode", None):
-            parts.append(f"顯示:{self._display_mode}")
-            parts.append(f"聯集:{'ON' if self._is_union else 'OFF'}")
-            parts.append(f"已選:{self._selected_count}")
-
-        self._meta.setText(" | ".join(parts))
+            mode_str = "聯集" if self._is_union else "個別"
+            self._lbl_status.setText(f"[{mode_str}] 已選: {self._selected_count}")
+        else:
+            self._lbl_status.setText("")
 
     # 模擬載入進度：從 25% 慢慢跑到 99%，等待實際完成後才補 100%
     def start_scifi_simulated(
