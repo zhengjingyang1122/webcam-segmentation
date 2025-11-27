@@ -1,129 +1,41 @@
-# ===================================================================
-# Webcam Snapper 應用程式設定檔
-# ===================================================================
-
-# --- 介面與外觀 (UI & Theme) ---
-ui:
-  # 應用程式啟動時的預設視窗大小
-  default_size:
-    width: 1440
-    height: 1080
-  # 全域 UI 字體大小
-  font_size: "12px"
-
-theme:
-  # 預設主題，可選: "dark", "light", "custom"
-  # 若設為 "custom"，將會使用下方的 custom_colors
-  preset: "dark"
-  # 自訂顏色 (僅在 preset 為 "custom" 時生效)
-  custom_colors:
-    background: "#1b1e23"
-    foreground: "#e8eaed"
-    accent: "#333844"
-    border: "#3a3f47"
-
-# --- 檔案與路徑 (Paths) ---
-paths:
-  # 拍照和錄影的預設儲存位置
-  # '~' 會被自動解析為使用者的主目錄
-  default_output: "~/Pictures/"
-
-# --- 日誌 (Logging) ---
+app_info:
+  author: Coffee ☕
+  commercial_use: false
+  license: 僅供學術研究與個人學習使用
+  name: 影像標註工具
+  version: 1.0.0
 logging:
-  # 儲存日誌檔案的目錄
-  directory: "logs"
-  # 日誌記錄的最低等級
-  # 可選: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
-  level: "INFO"
-  # 是否啟用 JSON 格式的日誌 (方便機器解析)
+  directory: logs
   json_enabled: true
-  # 日誌輪替設定，避免單一檔案過大
+  level: INFO
   rotation:
-    # 每個日誌檔案的最大大小 (bytes)
-    max_bytes: 2000000 # 約 2MB
-    # 保留的舊日誌檔案數量
     backup_count: 5
-  # UI 彈出訊息的最低日誌等級
-  ui_popup_level: "ERROR"
-
-# --- 鍵盤快捷鍵 (Shortcuts) ---
-# 從 shortcuts.json 合併而來
-# 每個操作可以設定一個或多個快捷鍵
+    max_bytes: 2000000
+  ui_popup_level: ERROR
+paths:
+  default_output: ~/Pictures/
+segmentation:
+  default_device: auto
+  default_model: vit_h
+  mask_generator:
+    min_mask_region_area: 100
+    points_per_side: 32
+    pred_iou_thresh: 0.88
+    stability_score_thresh: 0.95
 shortcuts:
-  # 主視窗中的快捷鍵
-  main:
-    capture.photo:
-      - "Space"
-    record.start_resume:
-      - "R"
-    record.stop_save:
-      - "Shift+R"
-  # 檢視器 (例如分割工具) 中的快捷鍵
   viewer:
-    nav.prev:
-      - "Left"
-      - "PageUp"
     nav.next:
-      - "Right"
-      - "PageDown"
+    - d
+    nav.prev:
+    - a
     save.selected:
-      - "S"
-      - "Ctrl+S"
-    save.union:
-      - "U"
-    window.close:
-      - "Esc"
-
-# --- 效能與資源 (Performance & Resources) ---
-performance:
-  camera:
-    # 偏好的相機解析度 (若相機支援)
-    preferred_resolution:
-      width: 1920
-      height: 1080
-    # 偏好的相機幀率 (若相機支援)
-    preferred_framerate: 30
-  video_recording:
-    # 錄影的編碼器 (例如: "avc1" for H.264, "mp4v" for MPEG-4)
-    # 需視作業系統和已安裝的編碼器而定
-    codec: "avc1"
-    # 錄影品質，可對應到不同的位元率
-    # 可選: "low", "normal", "high"
-    quality: "normal"
-    # 影片容器格式
-    container: "mp4"
-
-# --- 應用程式行為 (Application Behavior) ---
-behavior:
-  # 啟動時是否自動開啟相機
-  auto_start_camera_on_launch: false
-  # 是否記住上次使用的相機設備
-  remember_last_used_camera: true
-  # 是否儲存視窗狀態 (如側邊欄位置、視窗大小)
-  save_window_state: true
-
-# --- 功能預設值 (Feature Defaults) ---
-features:
-  burst_shot:
-    # 預設連拍張數
-    default_count: 5
-    # 預設連拍間隔 (毫秒)
-    default_interval_ms: 500
-  camera:
-    # 清晰度閾值，數值越高，對焦要求越嚴格
-    default_focus_threshold: 150
-
-# --- 進階功能參數 (Advanced Features / Power-User) ---
-advanced_features:
-  # Segment Anything Model (SAM) 自動分割的進階參數
-  segmentation:
-    # 預設運行設備: "GPU" 或 "CPU"
-    default_device: "GPU"
-    # 預設模型: "vit_h", "vit_l", "vit_b"
-    default_model: "vit_h"
-    # 自動蒙版產生器的參數 (提供給專業使用者微調)
-    mask_generator:
-      points_per_side: 32
-      pred_iou_thresh: 0.88
-      stability_score_thresh: 0.95
-      min_mask_region_area: 100
+    - Ctrl+S
+    view.reset:
+    - R
+theme:
+  preset: dark
+ui:
+  default_size:
+    height: 1080
+    width: 1440
+  font_size: 12px

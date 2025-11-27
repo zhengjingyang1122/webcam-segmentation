@@ -9,7 +9,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 from PySide6.QtCore import QDir, QEvent, QPoint, QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -266,20 +266,25 @@ class SegmentationViewer(QMainWindow):
         self.view.viewport().installEventFilter(self)  # hover/點選 hit test
 
         # 右側群組 UI
-        grp_nav = QGroupBox("導航")
-        self.btn_prev = QPushButton("◀ 上一張 (PageUp)")
-        self.btn_next = QPushButton("下一張 (PageDown) ▶")
-        self.btn_reset_view = QPushButton("🔄")  # 使用圖示
-        self.btn_reset_view.setToolTip("重設畫布")
-        lay_nav = QHBoxLayout()  # 橫向排列
+        # 右側群組 UI
+        grp_nav = QGroupBox("影像切換")
+        self.btn_prev = QPushButton("◀ (PageUp)")
+        self.btn_prev.setToolTip("切換至上一張影像")
+        self.btn_next = QPushButton("▶ (PageDown)")
+        self.btn_next.setToolTip("切換至下一張影像")
+        self.btn_reset_view = QPushButton("🔄")
+        self.btn_reset_view.setToolTip("重設影像縮放與位置")
+        lay_nav = QHBoxLayout()
         lay_nav.addWidget(self.btn_prev)
         lay_nav.addWidget(self.btn_next)
         lay_nav.addWidget(self.btn_reset_view)
         grp_nav.setLayout(lay_nav)
 
-        grp_crop = QGroupBox("輸出裁切模式")
-        self.rb_full = QRadioButton("原圖大小")
-        self.rb_bbox = QRadioButton("最小外接矩形")
+        grp_crop = QGroupBox("裁切設定")
+        self.rb_full = QRadioButton("全圖")
+        self.rb_full.setToolTip("輸出整張原始圖片尺寸")
+        self.rb_bbox = QRadioButton("僅物件")
+        self.rb_bbox.setToolTip("僅輸出包含物件的最小矩形範圍")
         self.rb_bbox.setChecked(True)
         self.crop_group = QButtonGroup(self)
         self.crop_group.addButton(self.rb_full, 0)
@@ -289,9 +294,11 @@ class SegmentationViewer(QMainWindow):
         lay_crop.addWidget(self.rb_full)
         grp_crop.setLayout(lay_crop)
 
-        grp_mode = QGroupBox("輸出模式")
-        self.rb_mode_union = QRadioButton("疊加聯集(單檔輸出)")
-        self.rb_mode_indiv = QRadioButton("個別獨立(多檔輸出)")
+        grp_mode = QGroupBox("存檔方式")
+        self.rb_mode_union = QRadioButton("合併")
+        self.rb_mode_union.setToolTip("將所有選取物件合併為單一圖檔")
+        self.rb_mode_indiv = QRadioButton("個別")
+        self.rb_mode_indiv.setToolTip("每個選取物件分別存為獨立圖檔")
         self.rb_mode_indiv.setChecked(True)
         self.mode_group = QButtonGroup(self)
         self.mode_group.addButton(self.rb_mode_indiv, 0)
@@ -301,9 +308,12 @@ class SegmentationViewer(QMainWindow):
         lay_mode.addWidget(self.rb_mode_union)
         grp_mode.setLayout(lay_mode)
         # [新增] 顯示模式切換群組，放在 grp_mode 定義之後
-        grp_display = QGroupBox("顯示模式")
-        self.rb_show_mask = QRadioButton("遮罩高亮")
-        self.rb_show_bbox = QRadioButton("Bounding Box")
+        # [新增] 顯示模式切換群組，放在 grp_mode 定義之後
+        grp_display = QGroupBox("檢視模式")
+        self.rb_show_mask = QRadioButton("遮罩")
+        self.rb_show_mask.setToolTip("顯示語意分割遮罩 (Mask)")
+        self.rb_show_bbox = QRadioButton("外框")
+        self.rb_show_bbox.setToolTip("顯示物件外接矩形 (Bounding Box)")
         self.rb_show_mask.setChecked(True)
 
         self.display_group = QButtonGroup(self)
@@ -322,24 +332,31 @@ class SegmentationViewer(QMainWindow):
         self.mode_group.idClicked.connect(lambda _id: self._update_canvas())
 
         # [新增] 建立在 grp_mode 與 grp_save 之間，與其它群組同一層級
-        grp_labels = QGroupBox("輸出標註格式")
+        # [新增] 建立在 grp_mode 與 grp_save 之間，與其它群組同一層級
+        grp_labels = QGroupBox("標註檔")
         
         # YOLO 格式
-        self.chk_yolo_det = QCheckBox("YOLO Detection (bbox)")
-        self.chk_yolo_seg = QCheckBox("YOLO Segmentation (polygon)")
+        self.chk_yolo_det = QCheckBox("YOLO (偵測)")
+        self.chk_yolo_det.setToolTip("輸出 YOLO 格式的物件偵測標註 (BBox)")
+        self.chk_yolo_seg = QCheckBox("YOLO (分割)")
+        self.chk_yolo_seg.setToolTip("輸出 YOLO 格式的實例分割標註 (Polygon)")
         
         # COCO 格式
-        self.chk_coco = QCheckBox("COCO JSON")
+        self.chk_coco = QCheckBox("COCO")
+        self.chk_coco.setToolTip("輸出 COCO JSON 格式標註")
         
         # Pascal VOC 格式
-        self.chk_voc = QCheckBox("Pascal VOC XML")
+        self.chk_voc = QCheckBox("VOC")
+        self.chk_voc.setToolTip("輸出 Pascal VOC XML 格式標註")
         
         # LabelMe 格式
-        self.chk_labelme = QCheckBox("LabelMe JSON")
+        self.chk_labelme = QCheckBox("LabelMe")
+        self.chk_labelme.setToolTip("輸出 LabelMe JSON 格式標註")
 
         self.spn_cls = QSpinBox()
         self.spn_cls.setRange(0, 999)
         self.spn_cls.setValue(0)
+        self.spn_cls.setToolTip("設定輸出標註的類別 ID (Class ID)")
 
         lay_labels = QFormLayout()
         lay_labels.addRow(self.chk_yolo_det)
@@ -347,21 +364,22 @@ class SegmentationViewer(QMainWindow):
         lay_labels.addRow(self.chk_coco)
         lay_labels.addRow(self.chk_voc)
         lay_labels.addRow(self.chk_labelme)
-        lay_labels.addRow("class_id", self.spn_cls)
+        lay_labels.addRow("類別 ID", self.spn_cls)
         grp_labels.setLayout(lay_labels)
 
         # 顏色設定（初始化，UI 移至菜單）
         self.mask_color = [0, 255, 0]  # 預設綠色 (BGR)
         self.bbox_color = [0, 255, 0]  # 預設綠色 (BGR)
 
-        grp_save = QGroupBox("儲存")
+        grp_save = QGroupBox("輸出")
         
         # 輸出路徑設定
         output_path_layout = QHBoxLayout()
-        output_path_label = QLabel("輸出路徑:")
+        output_path_label = QLabel("路徑:")
         self.output_path_edit = QLineEdit()
         self.output_path_edit.setPlaceholderText("預設為原影像同層資料夾")
         self.output_path_edit.setText("")  # 空白表示使用預設
+        self.output_path_edit.setToolTip("設定檔案輸出的目標資料夾")
         btn_browse_output = QPushButton("瀏覽...")
         btn_browse_output.clicked.connect(self._browse_output_path)
         
@@ -371,16 +389,19 @@ class SegmentationViewer(QMainWindow):
         
         # 輸出格式選擇（重新命名）
         format_layout = QHBoxLayout()
-        format_label = QLabel("影像檔案格式:")
+        format_label = QLabel("格式:")
         self.format_combo = QComboBox()
         self.format_combo.addItems(["PNG", "JPG", "BMP"])
         self.format_combo.setCurrentIndex(0)  # 預設 PNG
+        self.format_combo.setToolTip("選擇輸出影像的檔案格式")
         format_layout.addWidget(format_label)
         format_layout.addWidget(self.format_combo, 1)
         
-        self.btn_save_selected = QPushButton("💾 儲存已選目標 (Ctrl+S)")
-        self.btn_save_all = QPushButton("💾 儲存全部目標")
-        self.lbl_selected = QLabel("已選目標：0")
+        self.btn_save_selected = QPushButton("💾 選取物件")
+        self.btn_save_selected.setToolTip("僅儲存目前已選取的物件")
+        self.btn_save_all = QPushButton("💾 全部物件")
+        self.btn_save_all.setToolTip("自動儲存影像中偵測到的所有物件")
+        self.lbl_selected = QLabel("已選物件：0")
         self.lbl_selected.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         lay_save = QVBoxLayout()
@@ -433,6 +454,9 @@ class SegmentationViewer(QMainWindow):
         self._spawned_views: list[SegmentationViewer] = []
         self.status.message("準備就緒")
         
+        # 設定快捷鍵
+        self._setup_shortcuts()
+        
         self._start_batch_processing()
     
     def _save_all(self) -> None:
@@ -464,7 +488,7 @@ class SegmentationViewer(QMainWindow):
         menubar = self.menuBar()
         
         # 選項菜單
-        options_menu = menubar.addMenu("選項(&O)")
+        options_menu = menubar.addMenu("選項")
         
         # 顏色設定
         color_action = QAction("顏色設定...", self)
@@ -475,6 +499,40 @@ class SegmentationViewer(QMainWindow):
         params_action = QAction("分割參數...", self)
         params_action.triggered.connect(self._show_params_dialog)
         options_menu.addAction(params_action)
+
+    def _setup_shortcuts(self):
+        """設定快捷鍵"""
+        from modules.presentation.qt.shortcut_manager import ShortcutManager
+        
+        try:
+            shortcut_manager = ShortcutManager()
+            
+            # 上一張
+            prev_key = shortcut_manager.get_shortcut('nav.prev')
+            if prev_key:
+                shortcut_prev = QShortcut(QKeySequence(prev_key), self)
+                shortcut_prev.activated.connect(self._prev_image)
+            
+            # 下一張
+            next_key = shortcut_manager.get_shortcut('nav.next')
+            if next_key:
+                shortcut_next = QShortcut(QKeySequence(next_key), self)
+                shortcut_next.activated.connect(self._next_image)
+            
+            # 儲存選取
+            save_key = shortcut_manager.get_shortcut('save.selected')
+            if save_key:
+                shortcut_save = QShortcut(QKeySequence(save_key), self)
+                shortcut_save.activated.connect(self._save_selected)
+            
+            # 重設檢視
+            reset_key = shortcut_manager.get_shortcut('view.reset')
+            if reset_key:
+                shortcut_reset = QShortcut(QKeySequence(reset_key), self)
+                shortcut_reset.activated.connect(self.view.reset_view)
+                
+        except Exception as e:
+            logger.warning(f"載入快捷鍵失敗: {e}")
 
 
 
@@ -898,7 +956,7 @@ class SegmentationViewer(QMainWindow):
 
     def _update_selected_count(self) -> None:
         """Update the label showing the number of selected masks."""
-        self.lbl_selected.setText(f"已選目標：{len(self.selected_indices)}")
+        self.lbl_selected.setText(f"已選物件：{len(self.selected_indices)}")
 
     # ---- save ----
     def _save_selected(self) -> None:

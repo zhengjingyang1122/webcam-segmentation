@@ -89,27 +89,41 @@ class SegmentationLauncher(QMainWindow):
             avatar_label.setStyleSheet("font-size: 40px;")
         
         # 右側：文字訊息
-        # 右側：文字訊息
         text_layout = QVBoxLayout()
         text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        text_layout.setContentsMargins(20, 0, 15, 0)  # 左側留白 20px，右側留白 15px（與頭貼距離邊緣一致）
         
         # Title 改為 Tip 形式 (設定在頭貼上)
         avatar_label.setToolTip("Coffee ☕")
         
-        msg_label = QLabel("Remember to stay focused and take breaks.")
-        msg_label.setStyleSheet("font-size: 16px; color: #888;")
-        msg_label.setWordWrap(False) # 不換行
-        msg_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        msg_label = QLabel("It's a beautiful day to achieve great things.\nRemember to stay focused and take breaks.")
+        msg_label.setStyleSheet("""
+            QLabel {
+                font-family: 'Segoe UI', 'Arial', sans-serif;
+                font-size: 16px; 
+                color: #bbb; 
+                font-weight: 500;
+                line-height: 2.0;
+                background: transparent;
+            }
+        """)
+        msg_label.setWordWrap(True)  # 允許換行
+        msg_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        
+        # 設定大小策略，讓文字區域可以隨視窗寬度延展
+        from PySide6.QtWidgets import QSizePolicy
+        msg_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        msg_label.setMinimumWidth(300)  # 設定最小寬度
+        msg_label.setMaximumWidth(800)  # 設定最大寬度，避免過寬
         
         text_layout.addWidget(msg_label)
         
         # 排版：頭貼固定最左，接著文字，右側彈簧
         author_layout.addWidget(avatar_label)
-        author_layout.addLayout(text_layout)
+        author_layout.addLayout(text_layout, 1)  # 設定 stretch factor 為 1，讓 text_layout 可以延展
         author_layout.addStretch()
         
         author_group.setLayout(author_layout)
-        content_layout.addWidget(author_group)
         
         # Settings group (Model & Device)
         settings_group = QGroupBox("系統設定")
@@ -173,7 +187,7 @@ class SegmentationLauncher(QMainWindow):
         btn_browse_folder.setFixedWidth(30)
         btn_browse_folder.clicked.connect(self._browse_folder_path)
         
-        btn_open_folder = QPushButton("📂 批次分割") # Icon for Action
+        btn_open_folder = QPushButton("🗂️ 批次分割")  # 更換 icon 為檔案夾卡片
         btn_open_folder.setToolTip("執行資料夾批次分割")
         btn_open_folder.clicked.connect(self._open_folder_from_path)
         
@@ -187,6 +201,9 @@ class SegmentationLauncher(QMainWindow):
         path_group.setLayout(path_layout)
         
         content_layout.addWidget(path_group)
+        
+        # 將作者群組移動到最下方
+        content_layout.addWidget(author_group)
         content_layout.addStretch()
         
         main_layout.addLayout(content_layout)
@@ -224,6 +241,14 @@ class SegmentationLauncher(QMainWindow):
         view_menu.addAction(act_light)
         view_menu.addAction(act_light)
         view_menu.addAction(act_dark)
+        
+        # Edit menu
+        edit_menu = self.menuBar().addMenu("編輯")
+        
+        act_shortcuts = QAction("快捷鍵設定...", self)
+        act_shortcuts.triggered.connect(self._show_shortcuts_dialog)
+        
+        edit_menu.addAction(act_shortcuts)
 
         # Help menu
         help_menu = self.menuBar().addMenu("說明")
@@ -232,6 +257,14 @@ class SegmentationLauncher(QMainWindow):
         act_help.triggered.connect(self._show_help)
         
         help_menu.addAction(act_help)
+        
+        # About menu
+        about_menu = self.menuBar().addMenu("關於")
+        
+        act_about = QAction("關於本專案...", self)
+        act_about.triggered.connect(self._show_about)
+        
+        about_menu.addAction(act_about)
     
     def _apply_theme(self, theme_name: str):
         """Apply theme to launcher and viewer if open."""
@@ -484,6 +517,55 @@ class SegmentationLauncher(QMainWindow):
         """Handle viewer closing."""
         if viewer in self._active_viewers:
             self._active_viewers.remove(viewer)
+
+    def _show_shortcuts_dialog(self):
+        """Show shortcuts configuration dialog."""
+        from modules.presentation.qt.shortcut_dialog import ShortcutEditorDialog
+        dialog = ShortcutEditorDialog(self)
+        dialog.exec()
+
+    def _show_about(self):
+        """Show about dialog."""
+        about_text = """
+        <h2>影像標註工具 v1.0.0</h2>
+        <p><b>作者：</b>Coffee ☕</p>
+        
+        <h3>專案資訊</h3>
+        <p>本專案為基於 Segment Anything Model (SAM) 的影像標註工具，<br>
+        提供直覺的介面讓使用者快速標註影像中的物件。</p>
+        
+        <h3>授權與使用限制</h3>
+        <p><b>本專案僅供學術研究與個人學習使用。</b><br>
+        未經授權，請勿用於商業用途。</p>
+        
+        <h3>使用的開源套件</h3>
+        <ul>
+            <li><b>PySide6 (Qt for Python)</b><br>
+                授權：LGPL v3 / Commercial License<br>
+                說明：PySide6 採用 LGPL v3 授權，允許在遵守 LGPL 條款下用於商業專案。<br>
+                若需要閉源商業使用，可購買 Qt 商業授權。</li>
+            <li><b>Segment Anything Model (SAM)</b><br>
+                授權：Apache License 2.0<br>
+                說明：Meta AI 開發的模型，允許商業使用。</li>
+            <li><b>OpenCV</b><br>
+                授權：Apache License 2.0<br>
+                說明：開源電腦視覺函式庫，允許商業使用。</li>
+            <li><b>PyTorch</b><br>
+                授權：BSD-3-Clause License<br>
+                說明：開源深度學習框架，允許商業使用。</li>
+        </ul>
+        
+        <h3>商業使用說明</h3>
+        <p>雖然本專案使用的主要套件（PySide6、SAM、OpenCV、PyTorch）<br>
+        在遵守各自授權條款下允許商業使用，但<b>本專案程式碼本身</b><br>
+        未經作者授權不得用於商業用途。</p>
+        
+        <p>如需商業授權，請聯繫作者。</p>
+        
+        <hr>
+        <p style="font-size: 11px; color: #666;">© 2025 Coffee. All rights reserved.</p>
+        """
+        QMessageBox.about(self, "關於", about_text)
 
     def _show_help(self):
         """Show help dialog."""
