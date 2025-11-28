@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QGridLayout,
     QGroupBox,
+    QButtonGroup,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,6 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSlider,
     QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
@@ -178,8 +181,13 @@ class ImageView(QGraphicsView):
         factor = pow(1.0015, delta)  # 平滑倍率
         self.scale(factor, factor)
 
+    # Signals for drawing interaction
+    drawing_started = Signal(int, int)  # x, y
+    drawing_moved = Signal(int, int)    # x, y
+    drawing_finished = Signal(int, int) # x, y
+
     def mousePressEvent(self, ev) -> None:
-        """Handle mouse press events for panning."""
+        """Handle mouse press events for panning or drawing."""
         if ev.button() == Qt.MouseButton.MiddleButton:
             self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             # 轉送成左鍵給 QGraphicsView 內部開始拖曳
@@ -192,11 +200,26 @@ class ImageView(QGraphicsView):
             )
             super().mousePressEvent(fake)
             ev.accept()
+        elif ev.button() == Qt.MouseButton.LeftButton:
+            # Check if we are in drawing mode (handled by parent logic via signals)
+            # Map to image coordinates
+            p = self.map_widget_to_image(ev.position().toPoint())
+            if p:
+                self.drawing_started.emit(p[0], p[1])
+            super().mousePressEvent(ev)
         else:
             super().mousePressEvent(ev)
 
+    def mouseMoveEvent(self, ev) -> None:
+        """Handle mouse move events."""
+        super().mouseMoveEvent(ev)
+        if ev.buttons() & Qt.MouseButton.LeftButton:
+            p = self.map_widget_to_image(ev.position().toPoint())
+            if p:
+                self.drawing_moved.emit(p[0], p[1])
+
     def mouseReleaseEvent(self, ev) -> None:
-        """Handle mouse release events to stop panning."""
+        """Handle mouse release events to stop panning or drawing."""
         if ev.button() == Qt.MouseButton.MiddleButton:
             fake = type(ev)(
                 QEvent.MouseButtonRelease,
@@ -208,6 +231,11 @@ class ImageView(QGraphicsView):
             super().mouseReleaseEvent(fake)
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
             ev.accept()
+        elif ev.button() == Qt.MouseButton.LeftButton:
+            p = self.map_widget_to_image(ev.position().toPoint())
+            if p:
+                self.drawing_finished.emit(p[0], p[1])
+            super().mouseReleaseEvent(ev)
         else:
             super().mouseReleaseEvent(ev)
 
@@ -327,6 +355,12 @@ class SegmentationViewer(QMainWindow):
         lay_view_nav.addLayout(nav_layout)
         lay_view_nav.addWidget(self.btn_reset_view)
         
+        # 顯示所有候選遮罩
+        self.chk_show_candidates = QCheckBox("顯示所有候選遮罩")
+        self.chk_show_candidates.setToolTip("以低透明度顯示所有 SAM 生成的遮罩")
+        self.chk_show_candidates.stateChanged.connect(lambda: self._update_canvas())
+        lay_view_nav.addWidget(self.chk_show_candidates)
+        
         grp_view_nav.setLayout(lay_view_nav)
         
         # 切換顯示模式即時重繪
@@ -418,30 +452,75 @@ class SegmentationViewer(QMainWindow):
         # Pascal VOC 格式
         self.chk_voc = QCheckBox("VOC")
         self.chk_voc.setToolTip("輸出 Pascal VOC XML 格式標註")
-        
-        # LabelMe 格式
-        self.chk_labelme = QCheckBox("LabelMe")
-        self.chk_labelme.setToolTip("輸出 LabelMe JSON 格式標註")
 
-        # 保留 spn_cls 變數以避免程式碼錯誤，但設為隱藏（不再顯示在 UI 中）
-        self.spn_cls = QSpinBox()
-        self.spn_cls.setRange(0, 999)
-        self.spn_cls.setValue(0)
-        self.spn_cls.setVisible(False)  # 隱藏，因為現在可在物件列表中編輯
-
-        lay_labels = QVBoxLayout()
-        lay_labels.addWidget(self.chk_yolo_det)
-        lay_labels.addWidget(self.chk_yolo_seg)
-        lay_labels.addWidget(self.chk_coco)
-        lay_labels.addWidget(self.chk_voc)
-        lay_labels.addWidget(self.chk_labelme)
+        # 佈局：2x2 網格
+        lay_labels = QGridLayout()
+        lay_labels.addWidget(self.chk_yolo_det, 0, 0)
+        lay_labels.addWidget(self.chk_yolo_seg, 0, 1)
+        lay_labels.addWidget(self.chk_coco, 1, 0)
+        lay_labels.addWidget(self.chk_voc, 1, 1)
         grp_labels.setLayout(lay_labels)
 
         # 顏色設定（初始化，UI 移至菜單）
         self.mask_color = [0, 255, 0]  # 預設綠色 (BGR)
         self.bbox_color = [0, 255, 0]  # 預設綠色 (BGR)
+        self.mask_alpha = 0.4          # 預設遮罩透明度
 
-        # ========== 4. 儲存操作 ==========
+        # ========== 4. 手動修飾工具 ==========
+        grp_manual_tools = QGroupBox("手動修飾")
+        
+        # 工具按鈕（僅 icon）
+        self.btn_tool_cursor = QPushButton("👆")
+        self.btn_tool_cursor.setCheckable(True)
+        self.btn_tool_cursor.setChecked(True)
+        self.btn_tool_cursor.setToolTip("選取模式：點選物件進行選取")
+        self.btn_tool_cursor.setFixedSize(50, 50)
+        
+        self.btn_tool_brush = QPushButton("🖌️")
+        self.btn_tool_brush.setCheckable(True)
+        self.btn_tool_brush.setToolTip("畫筆模式：手動增加遮罩區域")
+        self.btn_tool_brush.setFixedSize(50, 50)
+        
+        self.btn_tool_eraser = QPushButton("🧽")
+        self.btn_tool_eraser.setCheckable(True)
+        self.btn_tool_eraser.setToolTip("橡皮擦模式：手動擦除遮罩區域")
+        self.btn_tool_eraser.setFixedSize(50, 50)
+        
+        self.btn_tool_magic = QPushButton("🧹")
+        self.btn_tool_magic.setCheckable(True)
+        self.btn_tool_magic.setToolTip("魔法掃把：點選區域自動清除相似顏色範圍")
+        self.btn_tool_magic.setFixedSize(50, 50)
+        
+        # 工具群組（互斥）
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.addButton(self.btn_tool_cursor, 0)
+        self.tool_group.addButton(self.btn_tool_brush, 1)
+        self.tool_group.addButton(self.btn_tool_eraser, 2)
+        self.tool_group.addButton(self.btn_tool_magic, 3)
+        
+        # 筆刷大小滑桿
+        self.lbl_brush_size = QLabel("筆刷大小: 10px")
+        self.slider_brush_size = QSlider(Qt.Orientation.Horizontal)
+        self.slider_brush_size.setRange(1, 50)
+        self.slider_brush_size.setValue(10)
+        self.slider_brush_size.setToolTip("調整畫筆與橡皮擦的大小")
+        self.slider_brush_size.valueChanged.connect(lambda v: self.lbl_brush_size.setText(f"筆刷大小: {v}px"))
+        
+        # 佈局：工具按鈕排成一列
+        lay_manual = QVBoxLayout()
+        tools_layout = QHBoxLayout()
+        tools_layout.addWidget(self.btn_tool_cursor)
+        tools_layout.addWidget(self.btn_tool_brush)
+        tools_layout.addWidget(self.btn_tool_eraser)
+        tools_layout.addWidget(self.btn_tool_magic)
+        lay_manual.addLayout(tools_layout)
+        
+        lay_manual.addWidget(self.lbl_brush_size)
+        lay_manual.addWidget(self.slider_brush_size)
+        
+        grp_manual_tools.setLayout(lay_manual)
+
+        # ========== 5. 儲存操作 ==========
         grp_save_actions = QGroupBox("儲存操作")
         
         self.btn_save_selected = QPushButton("💾 儲存選取物件")
@@ -460,8 +539,10 @@ class SegmentationViewer(QMainWindow):
         # 參數設定（移至菜單，但保留變數）
 
         # ========== 左側物件列表面板（使用表格） ==========
-        grp_objects = QGroupBox("標註物件列表")
-        grp_objects.setContentsMargins(20, 40, 20, 0)  # 左側留白 20px，右側留白 15px（與頭貼距離邊緣一致）
+        grp_objects = QGroupBox("")
+        # 與控制面板保持一致的邊距 (Left, Top, Right, Bottom)
+        # 控制面板通常有預設邊距，這裡我們設定一個合理的邊距來對齊
+        grp_objects.setContentsMargins(10, 50, 10, 10) 
         objects_layout = QVBoxLayout()
         
         # 使用 QTableWidget 替代 QListWidget
@@ -509,9 +590,10 @@ class SegmentationViewer(QMainWindow):
         # ========== 組裝右側面板 ==========
         right_box = QVBoxLayout()
         right_box.addWidget(grp_view_nav)        # 1. 檢視與導航
-        right_box.addWidget(grp_output_config)   # 2. 輸出設定
-        right_box.addWidget(grp_labels)          # 3. 標註格式
-        right_box.addWidget(grp_save_actions)    # 4. 儲存操作
+        right_box.addWidget(grp_manual_tools)    # 2. 手動修飾 (新增)
+        right_box.addWidget(grp_output_config)   # 3. 輸出設定
+        right_box.addWidget(grp_labels)          # 4. 標註格式
+        right_box.addWidget(grp_save_actions)    # 5. 儲存操作
         right_box.addStretch(1)
         
         right_widget = QWidget()
@@ -534,8 +616,13 @@ class SegmentationViewer(QMainWindow):
         self._create_menu_bar()
 
         # connect
-        self.btn_reset_view.clicked.connect(self.view.reset_view)
+        self.btn_reset_view.clicked.connect(self._reset_view_and_selections)
         self.btn_prev.clicked.connect(self._prev_image)
+        
+        # 連接繪圖信號
+        self.view.drawing_started.connect(self._on_drawing_started)
+        self.view.drawing_moved.connect(self._on_drawing_moved)
+        self.view.drawing_finished.connect(self._on_drawing_finished)
         self.btn_next.clicked.connect(self._next_image)
         self.btn_save_selected.clicked.connect(self._save_selected)
         self.btn_save_all.clicked.connect(self._save_all)
@@ -549,6 +636,7 @@ class SegmentationViewer(QMainWindow):
         self._setup_shortcuts()
         
         self._start_batch_processing()
+
     
     def _save_all(self) -> None:
         """Save all masks for the current image."""
@@ -608,15 +696,30 @@ class SegmentationViewer(QMainWindow):
         # 選項菜單
         options_menu = menubar.addMenu("選項")
         
-        # 顏色設定
-        color_action = QAction("顏色設定...", self)
-        color_action.triggered.connect(self._show_color_dialog)
-        options_menu.addAction(color_action)
-        
-        # 分割參數
-        params_action = QAction("分割參數...", self)
+        # 1. 分割參數 (最重要)
+        params_action = QAction("分割參數設定...", self)
         params_action.triggered.connect(self._show_params_dialog)
         options_menu.addAction(params_action)
+        
+        options_menu.addSeparator()
+
+        # 2. 顯示設定 (顏色、透明度)
+        # 遮罩透明度
+        alpha_action = QAction("遮罩透明度...", self)
+        alpha_action.triggered.connect(self._change_mask_alpha)
+        options_menu.addAction(alpha_action)
+        
+        # 顏色設定 (保留但重要性降低，因為現在是自動顏色)
+        color_action = QAction("自訂顏色 (僅用於單色模式)...", self)
+        color_action.triggered.connect(self._show_color_dialog)
+        # options_menu.addAction(color_action) # 暫時隱藏，因為現在是多色模式
+
+        options_menu.addSeparator()
+
+        # 3. 快捷鍵
+        act_shortcuts = QAction("快捷鍵列表...", self)
+        act_shortcuts.triggered.connect(self._show_shortcuts_dialog)
+        options_menu.addAction(act_shortcuts)
         
         # 檢視選單
         view_menu = menubar.addMenu("檢視")
@@ -629,14 +732,6 @@ class SegmentationViewer(QMainWindow):
         
         view_menu.addAction(act_light)
         view_menu.addAction(act_dark)
-        
-        # 編輯選單
-        edit_menu = menubar.addMenu("編輯")
-        
-        act_shortcuts = QAction("快捷鍵設定...", self)
-        act_shortcuts.triggered.connect(self._show_shortcuts_dialog)
-        
-        edit_menu.addAction(act_shortcuts)
         
         # 說明選單
         help_menu = menubar.addMenu("說明")
@@ -683,7 +778,7 @@ class SegmentationViewer(QMainWindow):
             reset_key = shortcut_manager.get_shortcut('view.reset')
             if reset_key:
                 shortcut_reset = QShortcut(QKeySequence(reset_key), self)
-                shortcut_reset.activated.connect(self.view.reset_view)
+                shortcut_reset.activated.connect(self._reset_view_and_selections)
             
             # 復原標註 (Undo)
             undo_key = shortcut_manager.get_shortcut('edit.undo')
@@ -693,11 +788,6 @@ class SegmentationViewer(QMainWindow):
                 
         except Exception as e:
             logger.warning(f"載入快捷鍵失敗: {e}")
-
-
-
-
-
 
     def _start_batch_processing(self):
         if not self.image_paths:
@@ -1009,6 +1099,26 @@ class SegmentationViewer(QMainWindow):
         if self.idx < len(self.image_paths) - 1:
             self.idx += 1
             self._load_current_image(recompute=False)
+    
+    def _reset_view_and_selections(self) -> None:
+        """重設視圖並清除所有選取"""
+        # 重設視圖縮放與位置
+        self.view.reset_view()
+        
+        # 清除所有選取
+        if self.selected_indices:
+            self.selected_indices.clear()
+            self.annotations.clear()
+            self._hover_idx = None
+            
+            # 更新 UI
+            self._update_selected_count()
+            self._update_object_list()
+            self._update_canvas()
+            
+            self.status.message_temp("已重設視圖並清除所有選取", 1500)
+        else:
+            self.status.message_temp("已重設視圖", 1000)
 
     # ---- mapping / hit ----
     def _map_widget_to_image(self, p: QPoint) -> Optional[Tuple[int, int]]:
@@ -1038,6 +1148,21 @@ class SegmentationViewer(QMainWindow):
             return
         bgr, masks, _ = self.cache[path]
         base = bgr.copy()
+        
+        # 顯示所有候選遮罩 (低透明度)
+        if getattr(self, "chk_show_candidates", None) and self.chk_show_candidates.isChecked():
+            # 建立一個全黑的遮罩層
+            candidates_overlay = np.zeros_like(base)
+            for i, m in enumerate(masks):
+                # 跳過已選取的 (避免重複繪製)
+                if i in self.selected_indices:
+                    continue
+                # 繪製未選取的遮罩 (白色)
+                candidates_overlay[m > 0] = [255, 255, 255]
+            
+            # 混合到底圖 (alpha=0.15)
+            mask_indices = candidates_overlay > 0
+            base[mask_indices] = (base[mask_indices] * 0.85 + candidates_overlay[mask_indices] * 0.15).astype(np.uint8)
 
         # 顯示模式: 0=遮罩, 1=BBox
         disp_id = self.display_group.checkedId() if hasattr(self, "display_group") else 0
@@ -1056,7 +1181,9 @@ class SegmentationViewer(QMainWindow):
                         m = masks[i] > 0
                         # 根據 class 取得顏色
                         color_bgr = np.array(self._get_mask_color(i), dtype=np.uint8)
-                        base[m] = (base[m] * 0.4 + color_bgr * 0.6).astype(np.uint8)
+                        # 使用 self.mask_alpha
+                        alpha = self.mask_alpha
+                        base[m] = (base[m] * (1 - alpha) + color_bgr * alpha).astype(np.uint8)
 
             # 懸浮高亮（來自滑鼠或列表）
             hover_idx = self._list_hover_idx if self._list_hover_idx is not None else self._hover_idx
@@ -1066,19 +1193,22 @@ class SegmentationViewer(QMainWindow):
                 if hover_mask.shape[:2] == base.shape[:2]:
                     m = hover_mask > 0
                     color_bgr = np.array(self._get_mask_color(hover_idx), dtype=np.uint8)
-                    base[m] = (base[m] * 0.2 + color_bgr * 0.8).astype(np.uint8)
+                    # 懸浮時稍微不透明一點
+                    alpha = min(1.0, self.mask_alpha + 0.2)
+                    base[m] = (base[m] * (1 - alpha) + color_bgr * alpha).astype(np.uint8)
                     contours, _ = cv2.findContours(
                         m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                     )
                     if contours:
-                        # 使用自訂 bbox 顏色繪製輪廓
-                        bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
+                        # 使用該物件的類別顏色繪製輪廓，而不是固定的 bbox_color
+                        # bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
+                        bbox_color_tuple = tuple(int(c) for c in color_bgr.tolist())
                         cv2.polylines(base, contours, True, bbox_color_tuple, 2)
 
         else:
             # BBox 模式
             H, W = base.shape[:2]
-            bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
+            # bbox_color_tuple = tuple(int(c) for c in self.bbox_color) # 不再使用單一顏色
             if is_union and self.selected_indices:
                 # 聯集 + BBox: 只畫一個框線
                 union_mask = np.zeros((H, W), dtype=np.uint8)
@@ -1089,12 +1219,19 @@ class SegmentationViewer(QMainWindow):
                 cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 3)
             else:
                 # 個別 + BBox: 已選畫細線, 懸浮畫粗線
+                # 個別 + BBox: 已選畫細線, 懸浮畫粗線
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
                         x, y, w, h = compute_bbox(masks[i] > 0)
+                        # 使用該物件的類別顏色
+                        color_bgr = self._get_mask_color(i)
+                        bbox_color_tuple = tuple(int(c) for c in color_bgr)
                         cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 2)
                 if self._hover_idx is not None and 0 <= self._hover_idx < len(masks):
                     x, y, w, h = compute_bbox(masks[self._hover_idx] > 0)
+                    # 使用該物件的類別顏色
+                    color_bgr = self._get_mask_color(self._hover_idx)
+                    bbox_color_tuple = tuple(int(c) for c in color_bgr)
                     cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 3)
 
         if hasattr(self, "status"):
@@ -1369,6 +1506,22 @@ class SegmentationViewer(QMainWindow):
             
         tree = ET.ElementTree(root)
         tree.write(out_dir / f"{base_name}.xml", encoding="utf-8", xml_declaration=True)
+
+    def _change_mask_alpha(self):
+        """Change mask transparency."""
+        from PySide6.QtWidgets import QInputDialog
+        
+        current_alpha = int(self.mask_alpha * 100)
+        val, ok = QInputDialog.getInt(
+            self, 
+            "遮罩透明度", 
+            "請輸入透明度 (0-100，數值越小越透明):", 
+            current_alpha, 
+            0, 100, 1
+        )
+        if ok:
+            self.mask_alpha = val / 100.0
+            self._update_canvas()
 
     def _write_labelme_json(self, out_dir, base_name, polys, w, h, filename, indices):
         """Export to LabelMe JSON format."""
@@ -1677,6 +1830,18 @@ class SegmentationViewer(QMainWindow):
                     return ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
 
                 if event.type() == QEvent.MouseMove:
+                    # 在繪圖模式下不處理 hover
+                    tool_id = self.tool_group.checkedId()
+                    if tool_id != 0:  # 非選取模式
+                        if hasattr(self, 'status'):
+                            pos = _pt(event)
+                            img_xy = self._map_widget_to_image(pos)
+                            if img_xy:
+                                self.status.set_cursor_xy(img_xy[0], img_xy[1])
+                            else:
+                                self.status.set_cursor_xy(None, None)
+                        return False
+                    
                     pos = _pt(event)
                     img_xy = self._map_widget_to_image(pos)
                     if img_xy is None:
@@ -1694,7 +1859,13 @@ class SegmentationViewer(QMainWindow):
                         if hasattr(self, 'status'):
                             self.status.set_cursor_xy(x, y)  # 即時更新游標座標
                     return False
+                    
                 if event.type() == QEvent.MouseButtonPress:
+                    # 在繪圖模式下不處理點擊選取
+                    tool_id = self.tool_group.checkedId()
+                    if tool_id != 0:  # 非選取模式
+                        return False
+                    
                     pos = _pt(event)
                     img_xy = self._map_widget_to_image(pos)
                     if img_xy is None:
@@ -1753,6 +1924,175 @@ class SegmentationViewer(QMainWindow):
             return
         self._save_union(sorted(self.selected_indices))
     
+    # ===== 手動修飾工具方法 =====
+    
+    def _on_drawing_started(self, x: int, y: int):
+        """處理繪圖開始事件"""
+        tool_id = self.tool_group.checkedId()
+        
+        # 0: Cursor (不處理，交給原本的點擊邏輯)
+        if tool_id == 0:
+            return
+            
+        # 檢查是否有選取物件
+        if not self.selected_indices:
+            self.status.message_temp("請先選取一個物件進行修飾", 2000)
+            return
+            
+        # 3: Magic Broom (點擊觸發)
+        if tool_id == 3:
+            self._apply_magic_broom(x, y)
+            return
+            
+        # 1: Brush, 2: Eraser (開始筆觸)
+        self._is_drawing = True
+        self._apply_brush_stroke(x, y, tool_id)
+    
+    def _on_drawing_moved(self, x: int, y: int):
+        """處理繪圖移動事件"""
+        if not getattr(self, "_is_drawing", False):
+            return
+            
+        tool_id = self.tool_group.checkedId()
+        if tool_id in [1, 2]:  # Brush or Eraser
+            self._apply_brush_stroke(x, y, tool_id)
+    
+    def _on_drawing_finished(self, x: int, y: int):
+        """處理繪圖結束事件"""
+        if getattr(self, "_is_drawing", False):
+            self._is_drawing = False
+            self._last_brush_pos = None  # 清除上一個位置
+            # 可以在這裡儲存歷史記錄
+            # self._save_annotation_state()
+    
+    def _apply_brush_stroke(self, x: int, y: int, tool_id: int):
+        """應用畫筆或橡皮擦筆觸"""
+        if not self.image_paths or self.idx >= len(self.image_paths):
+            return
+            
+        path = self.image_paths[self.idx]
+        if path not in self.cache:
+            return
+            
+        _, masks, _ = self.cache[path]
+        
+        # 針對所有選取的 mask 進行修改
+        brush_size = self.slider_brush_size.value()
+        radius = brush_size // 2
+        
+        # 1: Brush (Add), 2: Eraser (Remove)
+        value = 1 if tool_id == 1 else 0
+        
+        # 改善平滑度：如果有上一個位置，繪製線段上的所有點
+        changed = False
+        if hasattr(self, '_last_brush_pos') and self._last_brush_pos:
+            x0, y0 = self._last_brush_pos
+            # 使用 Bresenham 線段算法獲取線段上的所有點
+            points = self._get_line_points(x0, y0, x, y)
+        else:
+            points = [(x, y)]
+        
+        # 儲存當前位置
+        self._last_brush_pos = (x, y)
+        
+        for px, py in points:
+            for idx in self.selected_indices:
+                if 0 <= idx < len(masks):
+                    mask = masks[idx]
+                    
+                    # 確保 mask 是 uint8 且連續的，以便 OpenCV 繪圖
+                    if mask.dtype == bool:
+                        mask = mask.astype(np.uint8)
+                        masks[idx] = mask
+                    
+                    if not mask.flags['C_CONTIGUOUS']:
+                        mask = np.ascontiguousarray(mask)
+                        masks[idx] = mask
+                    
+                    # 使用 OpenCV 繪製圓形來修改 mask
+                    cv2.circle(mask, (px, py), radius, value, -1)
+                    changed = True
+        
+        if changed:
+            self._update_canvas()
+    
+    def _get_line_points(self, x0: int, y0: int, x1: int, y1: int) -> list:
+        """使用 Bresenham 算法獲取線段上的所有點"""
+        points = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        
+        x, y = x0, y0
+        while True:
+            points.append((x, y))
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+        
+        return points
+            
+    def _apply_magic_broom(self, x: int, y: int):
+        """應用魔法掃把 (Region Growing 清除)"""
+        if not self.image_paths or self.idx >= len(self.image_paths):
+            return
+            
+        path = self.image_paths[self.idx]
+        if path not in self.cache:
+            return
+            
+        bgr, masks, _ = self.cache[path]
+        H, W = bgr.shape[:2]
+        
+        if not (0 <= x < W and 0 <= y < H):
+            return
+            
+        # 1. 找出連通區域 (Flood Fill)
+        # 建立 mask for floodFill (H+2, W+2)
+        flood_mask = np.zeros((H + 2, W + 2), np.uint8)
+        
+        # 容許度
+        loDiff = (20, 20, 20)
+        upDiff = (20, 20, 20)
+        
+        # 執行 floodFill，結果會標記在 flood_mask 中
+        # flags: 4-connectivity + (255 << 8) to fill with 255 + FLOODFILL_MASK_ONLY
+        flags = 4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY
+        
+        cv2.floodFill(bgr, flood_mask, (x, y), (0, 0, 0), loDiff, upDiff, flags)
+        
+        # 取出實際大小的 mask (去除邊框)
+        region_mask = flood_mask[1:-1, 1:-1]
+        
+        # 2. 從選取的 mask 中移除該區域
+        changed = False
+        count_removed = 0
+        
+        for idx in self.selected_indices:
+            if 0 <= idx < len(masks):
+                mask = masks[idx]
+                # 計算重疊區域
+                overlap = (mask > 0) & (region_mask > 0)
+                if np.any(overlap):
+                    # 移除重疊區域
+                    mask[overlap] = 0
+                    changed = True
+                    count_removed += np.sum(overlap)
+        
+        if changed:
+            self.status.message_temp(f"魔法掃把已清除 {count_removed} 像素", 2000)
+            self._update_canvas()
+        else:
+            self.status.message_temp("點選區域不在選取範圍內", 1000)
+
     # ===== 選單處理方法 =====
     
     def _apply_theme(self, theme_name: str):

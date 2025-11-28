@@ -59,7 +59,6 @@ class StatusFooter(QStatusBar):
                                         stop:0 #2b2f36, stop:1 #22252b);
             color: #e8eaed;
             border-top: 1px solid #3a3f47;
-            font-size: 12px;
         }
         #StatusMessageLabel {
             color: #e8eaed;
