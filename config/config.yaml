@@ -32,6 +32,8 @@ shortcuts:
     - Ctrl+S
     view.reset:
     - R
+    edit.undo:
+    - Ctrl+Z
 theme:
   preset: dark
 ui:

@@ -133,7 +133,7 @@ class SegmentationLauncher(QMainWindow):
         model_label = QLabel("模型:")
         self.model_combo = QComboBox()
         self.model_combo.addItems(list(self.model_files.keys()))
-        self.model_combo.setCurrentIndex(2)  # Default to SAM-H
+        self.model_combo.setCurrentIndex(0)  # Default to SAM-B (Fast)
         
         # Device
         device_label = QLabel("運算:")

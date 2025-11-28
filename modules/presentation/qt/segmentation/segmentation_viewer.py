@@ -8,32 +8,46 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QDir, QEvent, QPoint, QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform, QKeySequence, QShortcut
+from PySide6.QtCore import QDir, QEvent, QPoint, QRectF, Qt, QThread, Signal, QSize
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform, QKeySequence, QShortcut, QBrush
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
-    QDoubleSpinBox,
     QFileDialog,
-    QFileSystemModel,
     QFormLayout,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMenu,
+    QMenuBar,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QTreeView,
+    QDoubleSpinBox,
+    QSplitter,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -79,6 +93,7 @@ class SegmentationWorker(QThread):
             bgr, masks, scores = self.compute_fn(self.path, self.pps, self.iou)
             self.finished.emit(bgr, masks, scores)
         except Exception as e:
+            logger.error(f"SegmentationWorker error processing {self.path}: {e}", exc_info=True)
             self.error.emit(str(e))
 
 
@@ -116,7 +131,7 @@ class BatchSegmentationWorker(QThread):
                 np.savez_compressed(cache_file, **cache_data)
                 
             except Exception as e:
-                print(f"Error processing {path}: {e}")
+                logger.error(f"BatchSegmentationWorker error processing {path}: {e}", exc_info=True)
         
         self.finished.emit()
 
@@ -254,62 +269,31 @@ class SegmentationViewer(QMainWindow):
         self.compute_masks_fn = compute_masks_fn
         self.pm = path_manager  # 保存 PathManager 實例
         self.params = {
-            "points_per_side": int((params_defaults or {}).get("points_per_side", 32)),
+            "points_per_side": int((params_defaults or {}).get("points_per_side", 16)),
             "pred_iou_thresh": float((params_defaults or {}).get("pred_iou_thresh", 0.88)),
         }
         self.cache: Dict[Path, Tuple[np.ndarray, List[np.ndarray], List[float]]] = {}
         self.selected_indices: set[int] = set()
         self._hover_idx: Optional[int] = None
+        
+        # 標註系統
+        self.annotations: Dict[int, int] = {}  # {mask_index: class_id}
+        self.annotation_history: List[Dict] = []  # 歷史記錄
+        self.max_history = 20  # 最多保留20步
+        self._list_hover_idx: Optional[int] = None  # 列表懸浮的索引
+        
+        # 多色彩系統 - 使用 HSV 動態生成無限顏色
+        # 不再使用固定字典，改用函數生成
 
         # image view
         self.view = ImageView(self)
         self.view.viewport().installEventFilter(self)  # hover/點選 hit test
 
         # 右側群組 UI
-        # 右側群組 UI
-        grp_nav = QGroupBox("影像切換")
-        self.btn_prev = QPushButton("◀ (PageUp)")
-        self.btn_prev.setToolTip("切換至上一張影像")
-        self.btn_next = QPushButton("▶ (PageDown)")
-        self.btn_next.setToolTip("切換至下一張影像")
-        self.btn_reset_view = QPushButton("🔄")
-        self.btn_reset_view.setToolTip("重設影像縮放與位置")
-        lay_nav = QHBoxLayout()
-        lay_nav.addWidget(self.btn_prev)
-        lay_nav.addWidget(self.btn_next)
-        lay_nav.addWidget(self.btn_reset_view)
-        grp_nav.setLayout(lay_nav)
-
-        grp_crop = QGroupBox("裁切設定")
-        self.rb_full = QRadioButton("全圖")
-        self.rb_full.setToolTip("輸出整張原始圖片尺寸")
-        self.rb_bbox = QRadioButton("僅物件")
-        self.rb_bbox.setToolTip("僅輸出包含物件的最小矩形範圍")
-        self.rb_bbox.setChecked(True)
-        self.crop_group = QButtonGroup(self)
-        self.crop_group.addButton(self.rb_full, 0)
-        self.crop_group.addButton(self.rb_bbox, 1)
-        lay_crop = QVBoxLayout()
-        lay_crop.addWidget(self.rb_bbox)
-        lay_crop.addWidget(self.rb_full)
-        grp_crop.setLayout(lay_crop)
-
-        grp_mode = QGroupBox("存檔方式")
-        self.rb_mode_union = QRadioButton("合併")
-        self.rb_mode_union.setToolTip("將所有選取物件合併為單一圖檔")
-        self.rb_mode_indiv = QRadioButton("個別")
-        self.rb_mode_indiv.setToolTip("每個選取物件分別存為獨立圖檔")
-        self.rb_mode_indiv.setChecked(True)
-        self.mode_group = QButtonGroup(self)
-        self.mode_group.addButton(self.rb_mode_indiv, 0)
-        self.mode_group.addButton(self.rb_mode_union, 1)
-        lay_mode = QVBoxLayout()
-        lay_mode.addWidget(self.rb_mode_indiv)
-        lay_mode.addWidget(self.rb_mode_union)
-        grp_mode.setLayout(lay_mode)
-        # [新增] 顯示模式切換群組，放在 grp_mode 定義之後
-        # [新增] 顯示模式切換群組，放在 grp_mode 定義之後
-        grp_display = QGroupBox("檢視模式")
+        # ========== 1. 檢視與導航 ==========
+        grp_view_nav = QGroupBox("檢視與導航")
+        
+        # 顯示模式
         self.rb_show_mask = QRadioButton("遮罩")
         self.rb_show_mask.setToolTip("顯示語意分割遮罩 (Mask)")
         self.rb_show_bbox = QRadioButton("外框")
@@ -319,21 +303,107 @@ class SegmentationViewer(QMainWindow):
         self.display_group = QButtonGroup(self)
         self.display_group.addButton(self.rb_show_mask, 0)  # 0=遮罩
         self.display_group.addButton(self.rb_show_bbox, 1)  # 1=BBox
-
-        lay_display = QVBoxLayout()
-        lay_display.addWidget(self.rb_show_mask)
-        lay_display.addWidget(self.rb_show_bbox)
-        grp_display.setLayout(lay_display)
-
+        
+        # 導航按鈕
+        self.btn_prev = QPushButton("◀ 上一張")
+        self.btn_prev.setToolTip("切換至上一張影像 (PageUp)")
+        self.btn_next = QPushButton("下一張 ▶")
+        self.btn_next.setToolTip("切換至下一張影像 (PageDown)")
+        self.btn_reset_view = QPushButton("🔄 重設視圖")
+        self.btn_reset_view.setToolTip("重設影像縮放與位置")
+        
+        # 佈局
+        lay_view_nav = QVBoxLayout()
+        lay_view_nav.addWidget(QLabel("顯示模式:"))
+        display_layout = QHBoxLayout()
+        display_layout.addWidget(self.rb_show_mask)
+        display_layout.addWidget(self.rb_show_bbox)
+        lay_view_nav.addLayout(display_layout)
+        
+        lay_view_nav.addWidget(QLabel("影像切換:"))
+        nav_layout = QHBoxLayout()
+        nav_layout.addWidget(self.btn_prev)
+        nav_layout.addWidget(self.btn_next)
+        lay_view_nav.addLayout(nav_layout)
+        lay_view_nav.addWidget(self.btn_reset_view)
+        
+        grp_view_nav.setLayout(lay_view_nav)
+        
         # 切換顯示模式即時重繪
         self.display_group.idClicked.connect(lambda _id: self._update_canvas())
 
-        # [新增] 輸出模式切換時也要重繪（為了 BBox 聯集時只畫一個框）
+        # ========== 2. 輸出設定 ==========
+        grp_output_config = QGroupBox("輸出設定")
+        
+        # 裁切模式
+        self.rb_full = QRadioButton("完整影像")
+        self.rb_full.setToolTip("輸出整張原始圖片尺寸")
+        self.rb_bbox = QRadioButton("僅物件區域")
+        self.rb_bbox.setToolTip("僅輸出包含物件的最小矩形範圍")
+        self.rb_bbox.setChecked(True)
+        self.crop_group = QButtonGroup(self)
+        self.crop_group.addButton(self.rb_full, 0)
+        self.crop_group.addButton(self.rb_bbox, 1)
+        
+        # 輸出模式
+        self.rb_mode_indiv = QRadioButton("個別物件")
+        self.rb_mode_indiv.setToolTip("每個選取物件分別存為獨立圖檔")
+        self.rb_mode_union = QRadioButton("合併物件")
+        self.rb_mode_union.setToolTip("將所有選取物件合併為單一圖檔")
+        self.rb_mode_indiv.setChecked(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.rb_mode_indiv, 0)
+        self.mode_group.addButton(self.rb_mode_union, 1)
+        
+        # 輸出模式切換時也要重繪（為了 BBox 聯集時只畫一個框）
         self.mode_group.idClicked.connect(lambda _id: self._update_canvas())
+        
+        # 輸出格式
+        format_label = QLabel("檔案格式:")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["PNG", "JPG", "BMP"])
+        self.format_combo.setCurrentIndex(0)  # 預設 PNG
+        self.format_combo.setToolTip("選擇輸出影像的檔案格式")
+        
+        # 輸出路徑
+        output_path_label = QLabel("輸出路徑:")
+        self.output_path_edit = QLineEdit()
+        self.output_path_edit.setPlaceholderText("預設為原影像同層資料夾")
+        self.output_path_edit.setText("")  # 空白表示使用預設
+        self.output_path_edit.setToolTip("設定檔案輸出的目標資料夾")
+        btn_browse_output = QPushButton("瀏覽...")
+        btn_browse_output.clicked.connect(self._browse_output_path)
+        
+        # 佈局
+        lay_output_config = QVBoxLayout()
+        
+        lay_output_config.addWidget(QLabel("裁切模式:"))
+        crop_layout = QHBoxLayout()
+        crop_layout.addWidget(self.rb_bbox)
+        crop_layout.addWidget(self.rb_full)
+        lay_output_config.addLayout(crop_layout)
+        
+        lay_output_config.addWidget(QLabel("存檔方式:"))
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.rb_mode_indiv)
+        mode_layout.addWidget(self.rb_mode_union)
+        lay_output_config.addLayout(mode_layout)
+        
+        format_layout = QHBoxLayout()
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(self.format_combo, 1)
+        lay_output_config.addLayout(format_layout)
+        
+        lay_output_config.addWidget(output_path_label)
+        output_path_layout = QHBoxLayout()
+        output_path_layout.addWidget(self.output_path_edit, 1)
+        output_path_layout.addWidget(btn_browse_output)
+        lay_output_config.addLayout(output_path_layout)
+        
+        grp_output_config.setLayout(lay_output_config)
 
-        # [新增] 建立在 grp_mode 與 grp_save 之間，與其它群組同一層級
-        # [新增] 建立在 grp_mode 與 grp_save 之間，與其它群組同一層級
-        grp_labels = QGroupBox("標註檔")
+        # ========== 3. 標註格式 ==========
+        grp_labels = QGroupBox("標註格式")
         
         # YOLO 格式
         self.chk_yolo_det = QCheckBox("YOLO (偵測)")
@@ -353,75 +423,95 @@ class SegmentationViewer(QMainWindow):
         self.chk_labelme = QCheckBox("LabelMe")
         self.chk_labelme.setToolTip("輸出 LabelMe JSON 格式標註")
 
+        # 保留 spn_cls 變數以避免程式碼錯誤，但設為隱藏（不再顯示在 UI 中）
         self.spn_cls = QSpinBox()
         self.spn_cls.setRange(0, 999)
         self.spn_cls.setValue(0)
-        self.spn_cls.setToolTip("設定輸出標註的類別 ID (Class ID)")
+        self.spn_cls.setVisible(False)  # 隱藏，因為現在可在物件列表中編輯
 
-        lay_labels = QFormLayout()
-        lay_labels.addRow(self.chk_yolo_det)
-        lay_labels.addRow(self.chk_yolo_seg)
-        lay_labels.addRow(self.chk_coco)
-        lay_labels.addRow(self.chk_voc)
-        lay_labels.addRow(self.chk_labelme)
-        lay_labels.addRow("類別 ID", self.spn_cls)
+        lay_labels = QVBoxLayout()
+        lay_labels.addWidget(self.chk_yolo_det)
+        lay_labels.addWidget(self.chk_yolo_seg)
+        lay_labels.addWidget(self.chk_coco)
+        lay_labels.addWidget(self.chk_voc)
+        lay_labels.addWidget(self.chk_labelme)
         grp_labels.setLayout(lay_labels)
 
         # 顏色設定（初始化，UI 移至菜單）
         self.mask_color = [0, 255, 0]  # 預設綠色 (BGR)
         self.bbox_color = [0, 255, 0]  # 預設綠色 (BGR)
 
-        grp_save = QGroupBox("輸出")
+        # ========== 4. 儲存操作 ==========
+        grp_save_actions = QGroupBox("儲存操作")
         
-        # 輸出路徑設定
-        output_path_layout = QHBoxLayout()
-        output_path_label = QLabel("路徑:")
-        self.output_path_edit = QLineEdit()
-        self.output_path_edit.setPlaceholderText("預設為原影像同層資料夾")
-        self.output_path_edit.setText("")  # 空白表示使用預設
-        self.output_path_edit.setToolTip("設定檔案輸出的目標資料夾")
-        btn_browse_output = QPushButton("瀏覽...")
-        btn_browse_output.clicked.connect(self._browse_output_path)
-        
-        output_path_layout.addWidget(output_path_label)
-        output_path_layout.addWidget(self.output_path_edit, 1)
-        output_path_layout.addWidget(btn_browse_output)
-        
-        # 輸出格式選擇（重新命名）
-        format_layout = QHBoxLayout()
-        format_label = QLabel("格式:")
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(["PNG", "JPG", "BMP"])
-        self.format_combo.setCurrentIndex(0)  # 預設 PNG
-        self.format_combo.setToolTip("選擇輸出影像的檔案格式")
-        format_layout.addWidget(format_label)
-        format_layout.addWidget(self.format_combo, 1)
-        
-        self.btn_save_selected = QPushButton("💾 選取物件")
+        self.btn_save_selected = QPushButton("💾 儲存選取物件")
         self.btn_save_selected.setToolTip("僅儲存目前已選取的物件")
-        self.btn_save_all = QPushButton("💾 全部物件")
+        self.btn_save_all = QPushButton("💾 儲存全部物件")
         self.btn_save_all.setToolTip("自動儲存影像中偵測到的所有物件")
         self.lbl_selected = QLabel("已選物件：0")
         self.lbl_selected.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        lay_save = QVBoxLayout()
-        lay_save.addLayout(output_path_layout)
-        lay_save.addLayout(format_layout)
-        lay_save.addWidget(self.btn_save_selected)
-        lay_save.addWidget(self.btn_save_all)
-        lay_save.addWidget(self.lbl_selected)
-        grp_save.setLayout(lay_save)
+        lay_save_actions = QVBoxLayout()
+        lay_save_actions.addWidget(self.btn_save_selected)
+        lay_save_actions.addWidget(self.btn_save_all)
+        lay_save_actions.addWidget(self.lbl_selected)
+        grp_save_actions.setLayout(lay_save_actions)
 
         # 參數設定（移至菜單，但保留變數）
 
-        # 使用 DockWidget 讓右側面板可拖曳
+        # ========== 左側物件列表面板（使用表格） ==========
+        grp_objects = QGroupBox("標註物件列表")
+        grp_objects.setContentsMargins(20, 40, 20, 0)  # 左側留白 20px，右側留白 15px（與頭貼距離邊緣一致）
+        objects_layout = QVBoxLayout()
+        
+        # 使用 QTableWidget 替代 QListWidget
+        self.object_table = QTableWidget()
+        self.object_table.setColumnCount(4)
+        self.object_table.setHorizontalHeaderLabels(["色塊", "物件", "類別", "操作"])
+        self.object_table.setToolTip("滑鼠懸浮可高亮顯示對應物件")
+        self.object_table.setMouseTracking(True)
+        self.object_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.object_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.object_table.verticalHeader().setVisible(False)
+        
+        # 設定欄位寬度
+        self.object_table.setColumnWidth(0, 40)   # 色塊
+        self.object_table.setColumnWidth(1, 80)   # 物件
+        self.object_table.setColumnWidth(2, 60)   # 類別
+        self.object_table.setColumnWidth(3, 50)   # 操作
+        
+        # 連接懸浮事件
+        self.object_table.cellEntered.connect(self._on_table_cell_hover)
+        
+        objects_layout.addWidget(self.object_table)
+        grp_objects.setLayout(objects_layout)
+        
+        # 保留舊的 object_list 變數以避免錯誤（設為 None）
+        self.object_list = None
+
+        # ========== 組裝左側面板（物件列表） ==========
+        left_widget = QWidget()
+        left_box = QVBoxLayout()
+        left_box.addWidget(grp_objects)
+        left_box.setContentsMargins(0, 0, 0, 0)
+        left_widget.setLayout(left_box)
+        
+        # 建立左側 Dock
+        self.dock_objects = QDockWidget("標註物件", self)
+        self.dock_objects.setWidget(left_widget)
+        self.dock_objects.setFeatures(
+            QDockWidget.DockWidgetMovable | 
+            QDockWidget.DockWidgetFloatable
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock_objects)
+        self.dock_objects.show()  # 確保 dock 可見
+        
+        # ========== 組裝右側面板 ==========
         right_box = QVBoxLayout()
-        right_box.addWidget(grp_nav)
-        right_box.addWidget(grp_crop)
-        right_box.addWidget(grp_mode)
-        right_box.addWidget(grp_display)
-        right_box.addWidget(grp_labels)
-        right_box.addWidget(grp_save)
+        right_box.addWidget(grp_view_nav)        # 1. 檢視與導航
+        right_box.addWidget(grp_output_config)   # 2. 輸出設定
+        right_box.addWidget(grp_labels)          # 3. 標註格式
+        right_box.addWidget(grp_save_actions)    # 4. 儲存操作
         right_box.addStretch(1)
         
         right_widget = QWidget()
@@ -435,6 +525,7 @@ class SegmentationViewer(QMainWindow):
             QDockWidget.DockWidgetFloatable
         )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_controls)
+        self.dock_controls.show()  # 確保 dock 可見
 
         # 設定中央widget為影像檢視
         self.setCentralWidget(self.view)
@@ -483,6 +574,33 @@ class SegmentationViewer(QMainWindow):
         # Reuse _save_indices logic
         self._save_indices(list(range(len(masks))))
     
+    def _generate_class_color(self, class_id: int) -> list:
+        """使用 HSV 色彩空間動態生成類別顏色（BGR 格式）"""
+        import colorsys
+        
+        # 使用黃金比例來分散色相，確保顏色差異明顯
+        golden_ratio = 0.618033988749895
+        hue = (class_id * golden_ratio) % 1.0
+        
+        # 固定飽和度和明度以獲得鮮豔的顏色
+        saturation = 0.9
+        value = 0.95
+        
+        # 轉換 HSV 到 RGB
+        r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+        
+        # 轉換到 0-255 範圍並返回 BGR 格式（OpenCV 使用 BGR）
+        return [int(b * 255), int(g * 255), int(r * 255)]
+    
+    def _get_class_color(self, class_id: int) -> list:
+        """獲取類別顏色（BGR 格式）"""
+        return self._generate_class_color(class_id)
+    
+    def _get_mask_color(self, mask_idx: int) -> list:
+        """根據 mask 的 class 取得顏色（BGR 格式）"""
+        class_id = self.annotations.get(mask_idx, 0)
+        return self._get_class_color(class_id)
+    
     def _create_menu_bar(self):
         """建立菜單欄"""
         menubar = self.menuBar()
@@ -499,6 +617,42 @@ class SegmentationViewer(QMainWindow):
         params_action = QAction("分割參數...", self)
         params_action.triggered.connect(self._show_params_dialog)
         options_menu.addAction(params_action)
+        
+        # 檢視選單
+        view_menu = menubar.addMenu("檢視")
+        
+        act_light = QAction("淺色主題", self)
+        act_light.triggered.connect(lambda: self._apply_theme("light"))
+        
+        act_dark = QAction("深色主題", self)
+        act_dark.triggered.connect(lambda: self._apply_theme("dark"))
+        
+        view_menu.addAction(act_light)
+        view_menu.addAction(act_dark)
+        
+        # 編輯選單
+        edit_menu = menubar.addMenu("編輯")
+        
+        act_shortcuts = QAction("快捷鍵設定...", self)
+        act_shortcuts.triggered.connect(self._show_shortcuts_dialog)
+        
+        edit_menu.addAction(act_shortcuts)
+        
+        # 說明選單
+        help_menu = menubar.addMenu("說明")
+        
+        act_help = QAction("使用說明", self)
+        act_help.triggered.connect(self._show_help)
+        
+        help_menu.addAction(act_help)
+        
+        # 關於選單
+        about_menu = menubar.addMenu("關於")
+        
+        act_about = QAction("關於本專案...", self)
+        act_about.triggered.connect(self._show_about)
+        
+        about_menu.addAction(act_about)
 
     def _setup_shortcuts(self):
         """設定快捷鍵"""
@@ -530,6 +684,12 @@ class SegmentationViewer(QMainWindow):
             if reset_key:
                 shortcut_reset = QShortcut(QKeySequence(reset_key), self)
                 shortcut_reset.activated.connect(self.view.reset_view)
+            
+            # 復原標註 (Undo)
+            undo_key = shortcut_manager.get_shortcut('edit.undo')
+            if undo_key:
+                shortcut_undo = QShortcut(QKeySequence(undo_key), self)
+                shortcut_undo.activated.connect(self._undo_annotation)
                 
         except Exception as e:
             logger.warning(f"載入快捷鍵失敗: {e}")
@@ -667,19 +827,7 @@ class SegmentationViewer(QMainWindow):
 
     def _update_ui_after_load(self, path):
         # 嘗試載入已儲存的標註
-        annotation_file = path.parent / f"{path.stem}_annotations.json"
-        if annotation_file.exists():
-            try:
-                with open(annotation_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    self.selected_indices = set(data.get('selected_indices', []))
-                    logger.info(f"載入標註: {len(self.selected_indices)} 個選取的遮罩")
-                    self.status.message(f"載入標註: {len(self.selected_indices)} 個已選取的遮罩")
-            except Exception as e:
-                logger.warning(f"載入標註失敗: {e}")
-                self.selected_indices.clear()
-        else:
-            self.selected_indices.clear()
+        self._load_annotations(path)
         
         self._hover_idx = None
         self._update_selected_count()
@@ -900,24 +1048,25 @@ class SegmentationViewer(QMainWindow):
         is_union = mode_id == 1
 
         if not use_bbox:
-            # 遮罩高亮模式
+            # 遮罩高亮模式 - 使用多色彩系統
             if self.selected_indices:
-                sel_union = np.zeros(base.shape[:2], dtype=np.uint8)
+                # 為每個選取的物件繪製不同顏色
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
-                        sel_union = np.maximum(sel_union, masks[i])
-                m = sel_union > 0
-                # 使用自訂 mask 顏色
-                mask_color_bgr = np.array(self.mask_color, dtype=np.uint8)
-                base[m] = (base[m] * 0.4 + mask_color_bgr * 0.6).astype(np.uint8)
+                        m = masks[i] > 0
+                        # 根據 class 取得顏色
+                        color_bgr = np.array(self._get_mask_color(i), dtype=np.uint8)
+                        base[m] = (base[m] * 0.4 + color_bgr * 0.6).astype(np.uint8)
 
-            if self._hover_idx is not None and 0 <= self._hover_idx < len(masks):
-                hover_mask = masks[self._hover_idx]
+            # 懸浮高亮（來自滑鼠或列表）
+            hover_idx = self._list_hover_idx if self._list_hover_idx is not None else self._hover_idx
+            if hover_idx is not None and 0 <= hover_idx < len(masks):
+                hover_mask = masks[hover_idx]
                 # 確保 mask 維度正確
                 if hover_mask.shape[:2] == base.shape[:2]:
                     m = hover_mask > 0
-                    mask_color_bgr = np.array(self.mask_color, dtype=np.uint8)
-                    base[m] = (base[m] * 0.2 + mask_color_bgr * 0.8).astype(np.uint8)
+                    color_bgr = np.array(self._get_mask_color(hover_idx), dtype=np.uint8)
+                    base[m] = (base[m] * 0.2 + color_bgr * 0.8).astype(np.uint8)
                     contours, _ = cv2.findContours(
                         m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                     )
@@ -1043,10 +1192,10 @@ class SegmentationViewer(QMainWindow):
             save_path.write_bytes(buf.tobytes())
             
             # 寫出各種標註格式
-            self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
-            self._write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h)
-            self._write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name)
-            self._write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name)
+            self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h, indices)
+            self._write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h, indices)
+            self._write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name, indices)
+            self._write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name, indices)
             
             QMessageBox.information(self, "完成", f"已儲存聯集影像至：\n{save_path}")
             self.status.message("儲存完成")
@@ -1054,7 +1203,7 @@ class SegmentationViewer(QMainWindow):
             QMessageBox.warning(self, "失敗", "影像編碼失敗")
 
     def _save_indices(self, indices: List[int]) -> None:
-        """Save selected masks as individual images."""
+        """Save selected masks as individual images and export combined annotations."""
         path = self.image_paths[self.idx]
         bgr, masks, _ = self.cache[path]
         
@@ -1076,10 +1225,23 @@ class SegmentationViewer(QMainWindow):
         fmt = self.format_combo.currentText().lower()
         ext = f".{fmt}"
 
+        # 收集原始影像座標的標註資料，用於輸出單一標註檔
+        all_boxes = []
+        all_polys = []
+        valid_indices = []
+
         for i in indices:
             if not (0 <= i < len(masks)):
                 continue
             m = masks[i] > 0
+            
+            # 收集原始座標資料
+            x_orig, y_orig, w_orig, h_orig = compute_bbox(m)
+            poly_orig = self._compute_polygon(m)
+            
+            all_boxes.append((x_orig, y_orig, w_orig, h_orig))
+            all_polys.append(poly_orig)
+            valid_indices.append(i)
             
             # 準備輸出影像 (BGRA)
             bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
@@ -1088,19 +1250,11 @@ class SegmentationViewer(QMainWindow):
             base_name = f"{path.stem}_{i:03d}"
             
             if self.rb_bbox.isChecked():
-                x, y, w, h = compute_bbox(m)
-                crop = bgra[y : y + h, x : x + w]
-                img_h, img_w = h, w
-                boxes = [(0, 0, w, h)]
-                poly = self._compute_polygon(m[y : y + h, x : x + w])
-                polys = [poly]
+                # 裁切模式：儲存裁切後的影像
+                crop = bgra[y_orig : y_orig + h_orig, x_orig : x_orig + w_orig]
             else:
+                # 原圖模式：儲存整張影像（背景透明）
                 crop = bgra
-                img_h, img_w = H, W
-                x, y, w, h = compute_bbox(m)
-                boxes = [(x, y, w, h)]
-                poly = self._compute_polygon(m)
-                polys = [poly]
             
             if fmt in ["jpg", "bmp"]:
                 save_img = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
@@ -1112,33 +1266,54 @@ class SegmentationViewer(QMainWindow):
             if ok:
                 save_path.write_bytes(buf.tobytes())
                 saved_count += 1
-                
-                # 寫出各種標註格式
-                self._write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h)
-                self._write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h)
-                self._write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name)
-                self._write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name)
         
         if saved_count > 0:
-            QMessageBox.information(self, "完成", f"已儲存 {saved_count} 個物件影像")
+            # 輸出單一標註檔案 (對應原始影像)
+            # 使用原始影像檔名 (不帶 _000 後綴)
+            base_name_orig = path.stem
+            
+            # 寫出各種標註格式 (使用原始影像尺寸和座標)
+            self._write_yolo_labels(out_dir, base_name_orig, all_boxes, all_polys, W, H, valid_indices)
+            self._write_coco_json(out_dir, base_name_orig, all_boxes, all_polys, W, H, valid_indices)
+            self._write_voc_xml(out_dir, base_name_orig, all_boxes, W, H, path.name, valid_indices)
+            self._write_labelme_json(out_dir, base_name_orig, all_polys, W, H, path.name, valid_indices)
+            
+            QMessageBox.information(self, "完成", f"已儲存 {saved_count} 個物件影像及標註檔案")
             self.status.message(f"已儲存 {saved_count} 個物件")
         else:
             QMessageBox.warning(self, "提示", "沒有儲存任何檔案")
 
-    def _write_coco_json(self, out_dir, base_name, boxes, polys, w, h):
+    def _write_coco_json(self, out_dir, base_name, boxes, polys, img_w, img_h, indices):
         """Export to COCO JSON format."""
         if not getattr(self, "chk_coco", None) or not self.chk_coco.isChecked():
             return
             
-        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
-        
         coco_data = {
-            "images": [{"id": 1, "file_name": f"{base_name}.png", "width": w, "height": h}],
+            "images": [
+                {"id": 1, "width": img_w, "height": img_h, "file_name": f"{base_name}.png"}
+            ],
             "annotations": [],
-            "categories": [{"id": cls_id, "name": f"class_{cls_id}"}]
+            "categories": []
         }
         
+        # 建立 Categories
+        used_classes = set()
+        for idx in indices:
+            cls_id = self.annotations.get(idx, 0)
+            used_classes.add(cls_id)
+            
+        for cls_id in sorted(used_classes):
+            coco_data["categories"].append({
+                "id": cls_id,
+                "name": f"class_{cls_id}",
+                "supercategory": "object"
+            })
+        
         for i, (box, poly) in enumerate(zip(boxes, polys)):
+            # 取得對應的 index 和 class
+            obj_idx = indices[i] if i < len(indices) else 0
+            cls_id = self.annotations.get(obj_idx, 0)
+            
             x, y, bw, bh = box
             segmentation = []
             if poly is not None and len(poly) > 0:
@@ -1157,14 +1332,11 @@ class SegmentationViewer(QMainWindow):
             
         (out_dir / f"{base_name}_coco.json").write_text(json.dumps(coco_data, indent=2), encoding="utf-8")
 
-    def _write_voc_xml(self, out_dir, base_name, boxes, w, h, filename):
+    def _write_voc_xml(self, out_dir, base_name, boxes, w, h, filename, indices):
         """Export to Pascal VOC XML format."""
         if not getattr(self, "chk_voc", None) or not self.chk_voc.isChecked():
             return
             
-        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
-        cls_name = f"class_{cls_id}"
-        
         import xml.etree.ElementTree as ET
         
         root = ET.Element("annotation")
@@ -1177,7 +1349,12 @@ class SegmentationViewer(QMainWindow):
         ET.SubElement(size, "height").text = str(h)
         ET.SubElement(size, "depth").text = "3"
         
-        for x, y, bw, bh in boxes:
+        for i, (x, y, bw, bh) in enumerate(boxes):
+            # 取得對應的 index 和 class
+            obj_idx = indices[i] if i < len(indices) else 0
+            cls_id = self.annotations.get(obj_idx, 0)
+            cls_name = f"class_{cls_id}"
+            
             obj = ET.SubElement(root, "object")
             ET.SubElement(obj, "name").text = cls_name
             ET.SubElement(obj, "pose").text = "Unspecified"
@@ -1193,17 +1370,19 @@ class SegmentationViewer(QMainWindow):
         tree = ET.ElementTree(root)
         tree.write(out_dir / f"{base_name}.xml", encoding="utf-8", xml_declaration=True)
 
-    def _write_labelme_json(self, out_dir, base_name, polys, w, h, filename):
+    def _write_labelme_json(self, out_dir, base_name, polys, w, h, filename, indices):
         """Export to LabelMe JSON format."""
         if not getattr(self, "chk_labelme", None) or not self.chk_labelme.isChecked():
             return
             
-        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
-        cls_name = f"class_{cls_id}"
-        
         shapes = []
-        for poly in polys:
+        for i, poly in enumerate(polys):
             if poly is not None and len(poly) > 0:
+                # 取得對應的 index 和 class
+                obj_idx = indices[i] if i < len(indices) else 0
+                cls_id = self.annotations.get(obj_idx, 0)
+                cls_name = f"class_{cls_id}"
+                
                 shape = {
                     "label": cls_name,
                     "points": poly.tolist(),
@@ -1224,6 +1403,265 @@ class SegmentationViewer(QMainWindow):
         }
         
         (out_dir / f"{base_name}_labelme.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    def _compute_polygon(self, mask: np.ndarray) -> Optional[np.ndarray]:
+        """回傳最大連通域的外輪廓座標，形狀為 (N,2)，整數像素座標。"""
+        m = (mask > 0).astype(np.uint8)
+        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts:
+            return None
+        c = max(cnts, key=cv2.contourArea)
+        return c.reshape(-1, 2)  # (N,2)
+
+    def _write_yolo_labels(
+        self,
+        out_dir: Path,
+        base_name: str,
+        boxes: List[Tuple[int, int, int, int]],
+        polys: List[Optional[np.ndarray]],
+        img_w: int,
+        img_h: int,
+        indices: List[int],  # 新增：物件索引列表
+    ) -> None:
+        """依勾選輸出 YOLO 檢測與/或 YOLO 分割標註檔。使用每個物件的 class ID。"""
+
+        # YOLO 檢測: 每行 => cls xc yc w h (皆為 0~1)
+        if getattr(self, "chk_yolo_det", None) and self.chk_yolo_det.isChecked():
+            lines = []
+            for idx, (x, y, w, h) in enumerate(boxes):
+                if w <= 0 or h <= 0:
+                    continue
+                # 使用對應物件的 class ID
+                obj_idx = indices[idx] if idx < len(indices) else 0
+                cls_id = self.annotations.get(obj_idx, 0)
+                xc = (x + w / 2.0) / img_w
+                yc = (y + h / 2.0) / img_h
+                nw = w / img_w
+                nh = h / img_h
+                lines.append(f"{cls_id} {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}")
+            if lines:
+                (out_dir / f"{base_name}_yolo.txt").write_text("\n".join(lines), encoding="utf-8")
+
+        # YOLO 分割: 每行 => cls x1 y1 x2 y2 ... (座標皆為 0~1)
+        if getattr(self, "chk_yolo_seg", None) and self.chk_yolo_seg.isChecked():
+            lines = []
+            for idx, poly in enumerate(polys):
+                if poly is None or len(poly) == 0:
+                    continue
+                # 使用對應物件的 class ID
+                obj_idx = indices[idx] if idx < len(indices) else 0
+                cls_id = self.annotations.get(obj_idx, 0)
+                pts = []
+                for px, py in poly:
+                    pts.append(f"{px / img_w:.6f} {py / img_h:.6f}")
+                lines.append(f"{cls_id} " + " ".join(pts))
+            if lines:
+                (out_dir / f"{base_name}_seg.txt").write_text("\n".join(lines), encoding="utf-8")
+
+    # ===== 新增：標註系統方法 =====
+    
+    def _save_annotation_state(self) -> None:
+        """儲存當前標註狀態到歷史記錄"""
+        state = {
+            'selected_indices': self.selected_indices.copy(),
+            'annotations': self.annotations.copy()
+        }
+        self.annotation_history.append(state)
+        # 限制歷史記錄數量
+        if len(self.annotation_history) > self.max_history:
+            self.annotation_history.pop(0)
+    
+    def _undo_annotation(self) -> None:
+        """復原上一步標註"""
+        if not self.annotation_history:
+            self.status.message_temp("無可復原的操作", 1000)
+            return
+        
+        # 恢復上一個狀態
+        state = self.annotation_history.pop()
+        self.selected_indices = state['selected_indices']
+        self.annotations = state['annotations']
+        
+        # 更新UI
+        self._update_canvas()
+        self._update_selected_count()
+        self._update_object_list()
+        self.status.message_temp("已復原", 1000)
+    
+    def _update_object_list(self) -> None:
+        """更新物件列表顯示（使用表格，支援無限類別）"""
+        # 清空表格
+        self.object_table.setRowCount(0)
+        
+        for row_idx, mask_idx in enumerate(sorted(self.selected_indices)):
+            class_id = self.annotations.get(mask_idx, 0)
+            
+            # 插入新行
+            self.object_table.insertRow(row_idx)
+            
+            # 欄位 0: 色塊（使用 QLabel 顯示顏色）
+            color_bgr = self._get_class_color(class_id)
+            color_hex = f"#{color_bgr[2]:02x}{color_bgr[1]:02x}{color_bgr[0]:02x}"  # BGR to Hex
+            color_widget = QWidget()
+            color_layout = QHBoxLayout(color_widget)
+            color_layout.setContentsMargins(5, 2, 5, 2)
+            color_label = QLabel("  ")
+            color_label.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #666; border-radius: 3px;")
+            color_label.setFixedSize(24, 24)
+            color_layout.addWidget(color_label)
+            color_layout.addStretch()
+            self.object_table.setCellWidget(row_idx, 0, color_widget)
+            
+            # 欄位 1: 物件編號
+            obj_item = QTableWidgetItem(f"#{mask_idx}")
+            obj_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            obj_item.setData(Qt.ItemDataRole.UserRole, mask_idx)  # 儲存 mask_idx
+            obj_item.setFlags(obj_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # 不可編輯
+            self.object_table.setItem(row_idx, 1, obj_item)
+            
+            # 欄位 2: 類別 ID（使用 SpinBox）
+            spin = QSpinBox()
+            spin.setRange(0, 9999)  # 支援無限類別
+            spin.setValue(class_id)
+            spin.setToolTip("修改類別 ID")
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # 連接信號，使用 lambda 捕捉當前的 mask_idx
+            spin.valueChanged.connect(lambda val, idx=mask_idx, r=row_idx: self._on_table_class_changed(idx, val, r))
+            self.object_table.setCellWidget(row_idx, 2, spin)
+            
+            # 欄位 3: 刪除按鈕
+            btn_delete = QPushButton("×")
+            btn_delete.setToolTip("從選取中移除")
+            btn_delete.setFixedSize(30, 24)
+            btn_delete.setStyleSheet("QPushButton { font-size: 16px; font-weight: bold; }")
+            btn_delete.clicked.connect(lambda checked, idx=mask_idx: self._on_delete_object(idx))
+            delete_widget = QWidget()
+            delete_layout = QHBoxLayout(delete_widget)
+            delete_layout.setContentsMargins(2, 0, 2, 0)
+            delete_layout.addWidget(btn_delete)
+            self.object_table.setCellWidget(row_idx, 3, delete_widget)
+            
+            # 設定行高
+            self.object_table.setRowHeight(row_idx, 32)
+
+    def _on_table_class_changed(self, mask_idx: int, new_class_id: int, row_idx: int) -> None:
+        """當使用者在表格中修改 Class ID 時"""
+        if mask_idx in self.selected_indices:
+            # 更新 annotations
+            self.annotations[mask_idx] = new_class_id
+            
+            # 更新畫布
+            self._update_canvas()
+            
+            # 更新該行的色塊顏色
+            color_bgr = self._get_class_color(new_class_id)
+            color_hex = f"#{color_bgr[2]:02x}{color_bgr[1]:02x}{color_bgr[0]:02x}"
+            
+            # 獲取色塊 widget 並更新顏色
+            color_widget = self.object_table.cellWidget(row_idx, 0)
+            if color_widget:
+                color_label = color_widget.findChild(QLabel)
+                if color_label:
+                    color_label.setStyleSheet(f"background-color: {color_hex}; border: 1px solid #666; border-radius: 3px;")
+    
+    def _on_delete_object(self, mask_idx: int) -> None:
+        """從選取中移除物件"""
+        if mask_idx in self.selected_indices:
+            # 儲存歷史狀態
+            self._save_annotation_state()
+            
+            # 移除選取
+            self.selected_indices.remove(mask_idx)
+            if mask_idx in self.annotations:
+                del self.annotations[mask_idx]
+            
+            # 更新 UI
+            self._update_selected_count()
+            self._update_object_list()
+            self._update_canvas()
+    
+    def _on_table_cell_hover(self, row: int, column: int) -> None:
+        """當滑鼠懸浮在表格儲存格上時"""
+        if row >= 0:
+            # 獲取該行的 mask_idx
+            item = self.object_table.item(row, 1)
+            if item:
+                mask_idx = item.data(Qt.ItemDataRole.UserRole)
+                self._list_hover_idx = mask_idx
+        else:
+            self._list_hover_idx = None
+        self._update_canvas()
+    
+    def _on_list_item_hover(self, item: QListWidgetItem) -> None:
+        """當滑鼠懸浮在列表項目上時（舊方法，保留以避免錯誤）"""
+        # 此方法已不再使用，因為改用表格
+        pass
+    
+    def _save_annotations_json(self, image_path: Path, out_dir: Path) -> None:
+        """Save current annotations (selected indices and classes) to a JSON file."""
+        try:
+            # 使用新格式：包含 class 資訊
+            annotations = []
+            for idx in sorted(self.selected_indices):
+                class_id = self.annotations.get(idx, 0)
+                annotations.append({
+                    "index": idx,
+                    "class_id": class_id
+                })
+            
+            data = {
+                "image_path": image_path.name,
+                "annotations": annotations
+            }
+            
+            # 儲存到與輸出影像相同的目錄，檔名為 [原始檔名]_annotations.json
+            save_path = out_dir / f"{image_path.stem}_annotations.json"
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"已儲存標註狀態: {save_path} ({len(annotations)} 個物件)")
+        except Exception as e:
+            logger.error(f"儲存標註狀態失敗: {e}")
+
+    def _load_annotations(self, image_path: Path) -> None:
+        """載入影像的標註資料"""
+        # 嘗試從同目錄載入 annotations.json
+        json_path = image_path.parent / f"{image_path.stem}_annotations.json"
+        
+        if not json_path.exists():
+            # 沒有標註檔案，清空狀態
+            self.selected_indices.clear()
+            self.annotations.clear()
+            self.annotation_history.clear()
+            return
+        
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 載入標註資料
+            if 'annotations' in data:
+                # 新格式：包含 class 資訊
+                self.selected_indices.clear()
+                self.annotations.clear()
+                for ann in data['annotations']:
+                    idx = ann['index']
+                    class_id = ann.get('class_id', 0)
+                    self.selected_indices.add(idx)
+                    self.annotations[idx] = class_id
+            elif 'selected_indices' in data:
+                # 舊格式：只有索引列表
+                self.selected_indices = set(data['selected_indices'])
+                self.annotations = {idx: 0 for idx in self.selected_indices}
+            
+            # 清空歷史記錄
+            self.annotation_history.clear()
+            
+            logger.info(f"已載入標註: {len(self.selected_indices)} 個物件")
+            
+        except Exception as e:
+            logger.error(f"載入標註失敗: {e}")
+            self.selected_indices.clear()
+            self.annotations.clear()
 
     def _save_one(self, idx: int) -> None:
         """Save a single mask index."""
@@ -1268,13 +1706,28 @@ class SegmentationViewer(QMainWindow):
                     if tgt is None:
                         return False
                     if event.button() == Qt.MouseButton.LeftButton:
+                        # 儲存歷史狀態
+                        self._save_annotation_state()
+                        # 加入選取
                         self.selected_indices.add(tgt)
+                        # 如果還沒有 class，設為預設 class 0
+                        if tgt not in self.annotations:
+                            self.annotations[tgt] = 0
+                        # 更新 UI
                         self._update_selected_count()
+                        self._update_object_list()
                         self._update_canvas()
                     elif event.button() == Qt.MouseButton.RightButton:
                         if tgt in self.selected_indices:
+                            # 儲存歷史狀態
+                            self._save_annotation_state()
+                            # 移除選取
                             self.selected_indices.remove(tgt)
+                            if tgt in self.annotations:
+                                del self.annotations[tgt]
+                            # 更新 UI
                             self._update_selected_count()
+                            self._update_object_list()
                             self._update_canvas()
                     return False
             except Exception:
@@ -1282,7 +1735,6 @@ class SegmentationViewer(QMainWindow):
                 return False
         return super().eventFilter(obj, event)
 
-    # 新增：在 SegmentationViewer 類別中加入兩個 helper
     def _collect_images_with_pivot_first(self, pivot: Path) -> List[Path]:
         """Collect images from the same directory, placing the pivot image first."""
         exts = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".gif", ".webp"}
@@ -1294,76 +1746,102 @@ class SegmentationViewer(QMainWindow):
         tail = [p for p in imgs if (p.resolve() if hasattr(p, "resolve") else p) != pv]
         return (head or [pivot]) + tail
 
-
-
     def save_union_hotkey(self):
         """Slot for the save union shortcut."""
         if not self.selected_indices:
             QMessageBox.information(self, "提示", "尚未選擇任何目標")
             return
         self._save_union(sorted(self.selected_indices))
-
-    def _save_annotations_json(self, image_path: Path, out_dir: Path) -> None:
-        """Save current annotations (selected indices) to a JSON file."""
-        try:
-            data = {
-                "image_path": image_path.name,
-                "selected_indices": list(self.selected_indices)
-            }
-            # 儲存到與輸出影像相同的目錄，檔名為 [原始檔名]_annotations.json
-            save_path = out_dir / f"{image_path.stem}_annotations.json"
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"已儲存標註狀態: {save_path}")
-        except Exception as e:
-            logger.error(f"儲存標註狀態失敗: {e}")
-
-    # [新增] 放在 SegmentationViewer 類別內其它私有方法旁
-
-    def _compute_polygon(self, mask: np.ndarray) -> Optional[np.ndarray]:
-        """回傳最大連通域的外輪廓座標，形狀為 (N,2)，整數像素座標。"""
-        m = (mask > 0).astype(np.uint8)
-        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
-            return None
-        c = max(cnts, key=cv2.contourArea)
-        return c.reshape(-1, 2)  # (N,2)
-
-    def _write_yolo_labels(
-        self,
-        out_dir: Path,
-        base_name: str,
-        boxes: List[Tuple[int, int, int, int]],
-        polys: List[Optional[np.ndarray]],
-        img_w: int,
-        img_h: int,
-    ) -> None:
-        """依勾選輸出 YOLO 檢測與/或 YOLO 分割標註檔。兩者同時勾選時各自輸出到不同檔名。"""
-        cls_id = int(self.spn_cls.value()) if hasattr(self, "spn_cls") else 0
-
-        # YOLO 檢測: 每行 => cls xc yc w h (皆為 0~1)
-        if getattr(self, "chk_yolo_det", None) and self.chk_yolo_det.isChecked():
-            lines = []
-            for x, y, w, h in boxes:
-                if w <= 0 or h <= 0:
-                    continue
-                xc = (x + w / 2.0) / img_w
-                yc = (y + h / 2.0) / img_h
-                nw = w / img_w
-                nh = h / img_h
-                lines.append(f"{cls_id} {xc:.6f} {yc:.6f} {nw:.6f} {nh:.6f}")
-            if lines:
-                (out_dir / f"{base_name}_yolo.txt").write_text("\n".join(lines), encoding="utf-8")
-
-        # YOLO 分割: 每行 => cls x1 y1 x2 y2 ... (座標皆為 0~1)
-        if getattr(self, "chk_yolo_seg", None) and self.chk_yolo_seg.isChecked():
-            lines = []
-            for poly in polys:
-                if poly is None or len(poly) == 0:
-                    continue
-                pts = []
-                for px, py in poly:
-                    pts.append(f"{px / img_w:.6f} {py / img_h:.6f}")
-                lines.append(f"{cls_id} " + " ".join(pts))
-            if lines:
-                (out_dir / f"{base_name}_seg.txt").write_text("\n".join(lines), encoding="utf-8")
+    
+    # ===== 選單處理方法 =====
+    
+    def _apply_theme(self, theme_name: str):
+        """套用主題"""
+        from modules.presentation.qt.theme_manager import apply_theme
+        apply_theme(self, theme_name)
+        self.status.message_temp(f"已切換至{theme_name}主題", 1000)
+    
+    def _show_shortcuts_dialog(self):
+        """顯示快捷鍵設定對話框"""
+        from modules.presentation.qt.shortcut_dialog import ShortcutEditorDialog
+        dialog = ShortcutEditorDialog(self)
+        dialog.exec()
+    
+    def _show_help(self):
+        """顯示使用說明"""
+        help_text = """
+        <h2>影像標註工具使用說明</h2>
+        <p><b>基本操作：</b></p>
+        <ul>
+            <li><b>左鍵點擊：</b> 選擇分割區域 (加入選取)</li>
+            <li><b>右鍵點擊：</b> 取消選擇分割區域 (移除選取)</li>
+            <li><b>滾輪：</b> 縮放影像</li>
+            <li><b>中鍵拖曳：</b> 移動影像</li>
+        </ul>
+        <p><b>快捷鍵：</b></p>
+        <ul>
+            <li><b>A：</b> 切換到上一張影像</li>
+            <li><b>D：</b> 切換到下一張影像</li>
+            <li><b>Ctrl + S：</b> 儲存目前已選取的目標</li>
+            <li><b>Ctrl + Z：</b> 復原上一步標註</li>
+            <li><b>R：</b> 重設檢視</li>
+        </ul>
+        <p><b>功能說明：</b></p>
+        <ul>
+            <li><b>輸出裁切模式：</b> 選擇輸出僅包含物件的最小矩形或整張原圖。</li>
+            <li><b>輸出模式：</b>
+                <ul>
+                    <li><b>個別獨立：</b> 每個選取的物件存成單獨的檔案。</li>
+                    <li><b>疊加聯集：</b> 所有選取的物件合併成單一檔案。</li>
+                </ul>
+            </li>
+            <li><b>輸出標註格式：</b> 支援 YOLO, COCO, VOC, LabelMe 等多種格式。</li>
+            <li><b>標註物件列表：</b> 顯示已標註的物件，滑鼠懸浮可高亮顯示。</li>
+        </ul>
+        <hr>
+        <p><i>Created by Coffee ☕</i></p>
+        """
+        QMessageBox.about(self, "使用說明", help_text)
+    
+    def _show_about(self):
+        """顯示關於對話框"""
+        about_text = """
+        <h2>影像標註工具 v1.0.0</h2>
+        <p><b>作者：</b>Coffee ☕</p>
+        
+        <h3>專案資訊</h3>
+        <p>本專案為基於 Segment Anything Model (SAM) 的影像標註工具，<br>
+        提供直覺的介面讓使用者快速標註影像中的物件。</p>
+        
+        <h3>授權與使用限制</h3>
+        <p><b>本專案僅供學術研究與個人學習使用。</b><br>
+        未經授權，請勿用於商業用途。</p>
+        
+        <h3>使用的開源套件</h3>
+        <ul>
+            <li><b>PySide6 (Qt for Python)</b><br>
+                授權：LGPL v3 / Commercial License<br>
+                說明：PySide6 採用 LGPL v3 授權，允許在遵守 LGPL 條款下用於商業專案。<br>
+                若需要閉源商業使用，可購買 Qt 商業授權。</li>
+            <li><b>Segment Anything Model (SAM)</b><br>
+                授權：Apache License 2.0<br>
+                說明：Meta AI 開發的模型，允許商業使用。</li>
+            <li><b>OpenCV</b><br>
+                授權：Apache License 2.0<br>
+                說明：開源電腦視覺函式庫，允許商業使用。</li>
+            <li><b>PyTorch</b><br>
+                授權：BSD-3-Clause License<br>
+                說明：開源深度學習框架，允許商業使用。</li>
+        </ul>
+        
+        <h3>商業使用說明</h3>
+        <p>雖然本專案使用的主要套件（PySide6、SAM、OpenCV、PyTorch）<br>
+        在遵守各自授權條款下允許商業使用，但<b>本專案程式碼本身</b><br>
+        未經作者授權不得用於商業用途。</p>
+        
+        <p>如需商業授權，請聯繫作者。</p>
+        
+        <hr>
+        <p style="font-size: 11px; color: #666;">© 2025 Coffee. All rights reserved.</p>
+        """
+        QMessageBox.about(self, "關於", about_text)
