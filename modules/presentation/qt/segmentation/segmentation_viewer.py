@@ -311,6 +311,9 @@ class SegmentationViewer(QMainWindow):
         self.max_history = 20  # 最多保留20步
         self._list_hover_idx: Optional[int] = None  # 列表懸浮的索引
         
+        # 每張影像的標註狀態（獨立存儲）
+        self.per_image_state: Dict[Path, Dict] = {}  # {image_path: {selected_indices, annotations}}
+        
         # 多色彩系統 - 使用 HSV 動態生成無限顏色
         # 不再使用固定字典，改用函數生成
 
@@ -391,7 +394,7 @@ class SegmentationViewer(QMainWindow):
         self.mode_group.addButton(self.rb_mode_union, 1)
         
         # 輸出模式切換時也要重繪（為了 BBox 聯集時只畫一個框）
-        self.mode_group.idClicked.connect(lambda _id: self._update_canvas())
+        self.mode_group.idClicked.connect(self._on_mode_changed)
         
         # 輸出格式
         format_label = QLabel("檔案格式:")
@@ -796,6 +799,10 @@ class SegmentationViewer(QMainWindow):
         if not self.image_paths:
             return
 
+        # 先載入並顯示第一張影像，讓視窗有內容
+        self._load_current_image(recompute=False)
+        
+        # 然後啟動批次處理（會跳過已有快取的影像）
         from modules.presentation.qt.progress_dialog import ThemedProgressDialog
         self.batch_progress = ThemedProgressDialog("批次處理中", "準備開始...", self)
         self.batch_progress.set_range(0, len(self.image_paths))
@@ -919,11 +926,12 @@ class SegmentationViewer(QMainWindow):
         QMessageBox.critical(self, "分割失敗", f"無法分割：{err_msg}")
 
     def _update_ui_after_load(self, path):
-        # 嘗試載入已儲存的標註
-        self._load_annotations(path)
+        # 載入此影像的標註狀態
+        self._load_image_state(path)
         
         self._hover_idx = None
         self._update_selected_count()
+        self._update_object_list()  # 更新物件列表
         self._update_nav_buttons()
         self._update_canvas()  # 確保畫布更新以顯示已選取的遮罩
         
@@ -1090,18 +1098,6 @@ class SegmentationViewer(QMainWindow):
         n = len(self.image_paths)
         self.btn_prev.setEnabled(self.idx > 0 and n > 0)
         self.btn_next.setEnabled(self.idx < n - 1 and n > 0)
-
-    def _prev_image(self) -> None:
-        """Navigate to the previous image."""
-        if self.idx > 0:
-            self.idx -= 1
-            self._load_current_image(recompute=False)
-
-    def _next_image(self) -> None:
-        """Navigate to the next image."""
-        if self.idx < len(self.image_paths) - 1:
-            self.idx += 1
-            self._load_current_image(recompute=False)
     
     def _reset_view_and_selections(self) -> None:
         """重設視圖並清除所有選取"""
@@ -1122,6 +1118,47 @@ class SegmentationViewer(QMainWindow):
             self.status.message_temp("已重設視圖並清除所有選取", 1500)
         else:
             self.status.message_temp("已重設視圖", 1000)
+    
+    def _save_current_image_state(self) -> None:
+        """保存當前影像的標註狀態"""
+        if not self.image_paths or self.idx >= len(self.image_paths):
+            return
+        
+        current_path = self.image_paths[self.idx]
+        self.per_image_state[current_path] = {
+            'selected_indices': self.selected_indices.copy(),
+            'annotations': self.annotations.copy()
+        }
+    
+    def _load_image_state(self, path: Path) -> None:
+        """載入指定影像的標註狀態，如果不存在則清空"""
+        if path in self.per_image_state:
+            # 恢復保存的狀態
+            state = self.per_image_state[path]
+            self.selected_indices = state['selected_indices'].copy()
+            self.annotations = state['annotations'].copy()
+        else:
+            # 清空狀態（新影像或尚未標註）
+            self.selected_indices.clear()
+            self.annotations.clear()
+        
+        # 清空歷史記錄（每張影像獨立）
+        self.annotation_history.clear()
+    
+    def _prev_image(self) -> None:
+        """Navigate to the previous image."""
+        if self.idx > 0:
+            self._save_current_image_state()
+            self.idx -= 1
+            self._load_current_image(recompute=False)
+
+    def _next_image(self) -> None:
+        """Navigate to the next image."""
+        if self.idx < len(self.image_paths) - 1:
+            self._save_current_image_state()
+            self.idx += 1
+            self._load_current_image(recompute=False)
+
 
     def _create_emoji_cursor(self, emoji: str, size: int = 32) -> QCursor:
         """Create a cursor from an emoji."""
@@ -1379,15 +1416,26 @@ class SegmentationViewer(QMainWindow):
         mode_id = self.mode_group.checkedId() if hasattr(self, "mode_group") else 0
         is_union = mode_id == 1
 
+        # 決定統一顏色 (用於聯集模式)
+        union_color_bgr = None
+        if is_union and self.selected_indices:
+            # 使用第一個選取物件的顏色作為統一顏色
+            first_idx = sorted(list(self.selected_indices))[0]
+            union_color_bgr = np.array(self._get_mask_color(first_idx), dtype=np.uint8)
+
         if not use_bbox:
             # 遮罩高亮模式 - 使用多色彩系統
             if self.selected_indices:
-                # 為每個選取的物件繪製不同顏色
+                # 為每個選取的物件繪製顏色
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
                         m = masks[i] > 0
-                        # 根據 class 取得顏色
-                        color_bgr = np.array(self._get_mask_color(i), dtype=np.uint8)
+                        # 決定顏色: 聯集模式用統一顏色，否則用個別顏色
+                        if is_union and union_color_bgr is not None:
+                            color_bgr = union_color_bgr
+                        else:
+                            color_bgr = np.array(self._get_mask_color(i), dtype=np.uint8)
+                            
                         # 使用 self.mask_alpha
                         alpha = self.mask_alpha
                         base[m] = (base[m] * (1 - alpha) + color_bgr * alpha).astype(np.uint8)
@@ -1407,26 +1455,32 @@ class SegmentationViewer(QMainWindow):
                         m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
                     )
                     if contours:
-                        # 使用該物件的類別顏色繪製輪廓，而不是固定的 bbox_color
-                        # bbox_color_tuple = tuple(int(c) for c in self.bbox_color)
+                        # 使用該物件的類別顏色繪製輪廓
                         bbox_color_tuple = tuple(int(c) for c in color_bgr.tolist())
                         cv2.polylines(base, contours, True, bbox_color_tuple, 2)
 
         else:
             # BBox 模式
             H, W = base.shape[:2]
-            # bbox_color_tuple = tuple(int(c) for c in self.bbox_color) # 不再使用單一顏色
+            
             if is_union and self.selected_indices:
-                # 聯集 + BBox: 只畫一個框線
+                # 聯集 + BBox: 只畫一個大框線
                 union_mask = np.zeros((H, W), dtype=np.uint8)
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
                         union_mask = np.maximum(union_mask, masks[i])
+                
                 x, y, w, h = compute_bbox(union_mask > 0)
+                
+                # 使用統一顏色
+                if union_color_bgr is not None:
+                    bbox_color_tuple = tuple(int(c) for c in union_color_bgr.tolist())
+                else:
+                    bbox_color_tuple = (0, 255, 0) # Fallback green
+                    
                 cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 3)
             else:
-                # 個別 + BBox: 已選畫細線, 懸浮畫粗線
-                # 個別 + BBox: 已選畫細線, 懸浮畫粗線
+                # 個別 + BBox: 已選畫細線
                 for i in self.selected_indices:
                     if 0 <= i < len(masks):
                         x, y, w, h = compute_bbox(masks[i] > 0)
@@ -1434,6 +1488,8 @@ class SegmentationViewer(QMainWindow):
                         color_bgr = self._get_mask_color(i)
                         bbox_color_tuple = tuple(int(c) for c in color_bgr)
                         cv2.rectangle(base, (x, y), (x + w, y + h), bbox_color_tuple, 2)
+                        
+                # 懸浮畫粗線
                 if self._hover_idx is not None and 0 <= self._hover_idx < len(masks):
                     x, y, w, h = compute_bbox(masks[self._hover_idx] > 0)
                     # 使用該物件的類別顏色
@@ -1848,10 +1904,28 @@ class SegmentationViewer(QMainWindow):
         self._update_object_list()
         self.status.message_temp("已復原", 1000)
     
+    def _on_mode_changed(self, mode_id: int) -> None:
+        """處理輸出模式切換"""
+        is_union = mode_id == 1
+        
+        if is_union:
+            # 切換到 Union 模式：將所有選取物件設為預設類別 0
+            for mask_idx in self.selected_indices:
+                self.annotations[mask_idx] = 0
+        
+        # 更新物件列表（會根據模式禁用/啟用類別選擇器）
+        self._update_object_list()
+        # 更新畫布（使用統一顏色）
+        self._update_canvas()
+    
     def _update_object_list(self) -> None:
         """更新物件列表顯示（使用表格，支援無限類別）"""
         # 清空表格
         self.object_table.setRowCount(0)
+        
+        # 檢查是否為 Union 模式
+        mode_id = self.mode_group.checkedId() if hasattr(self, "mode_group") else 0
+        is_union = mode_id == 1
         
         for row_idx, mask_idx in enumerate(sorted(self.selected_indices)):
             class_id = self.annotations.get(mask_idx, 0)
@@ -1883,8 +1957,12 @@ class SegmentationViewer(QMainWindow):
             spin = QSpinBox()
             spin.setRange(0, 9999)  # 支援無限類別
             spin.setValue(class_id)
-            spin.setToolTip("修改類別 ID")
+            spin.setToolTip("修改類別 ID" if not is_union else "Union 模式下類別固定為 0")
             spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            # Union 模式下禁用類別編輯
+            spin.setEnabled(not is_union)
+            
             # 連接信號，使用 lambda 捕捉當前的 mask_idx
             spin.valueChanged.connect(lambda val, idx=mask_idx, r=row_idx: self._on_table_class_changed(idx, val, r))
             self.object_table.setCellWidget(row_idx, 2, spin)
