@@ -843,30 +843,28 @@ class SegmentationViewer(QMainWindow):
         if hasattr(self, 'batch_progress'):
             self.batch_progress.set_value(current)
             
-            # 計算預估剩餘時間
+            # 計算經過時間
             if hasattr(self, '_batch_start_time') and current > 0:
                 import time
                 elapsed = time.time() - self._batch_start_time
-                avg_time = elapsed / current
-                remaining = avg_time * (total - current)
                 
-                # 格式化時間
-                if remaining < 60:
-                    time_str = f"{int(remaining)}秒"
-                elif remaining < 3600:
-                    mins = int(remaining / 60)
-                    secs = int(remaining % 60)
+                # 格式化經過時間
+                if elapsed < 60:
+                    time_str = f"{int(elapsed)}秒"
+                elif elapsed < 3600:
+                    mins = int(elapsed / 60)
+                    secs = int(elapsed % 60)
                     time_str = f"{mins}分{secs}秒"
                 else:
-                    hours = int(remaining / 3600)
-                    mins = int((remaining % 3600) / 60)
+                    hours = int(elapsed / 3600)
+                    mins = int((elapsed % 3600) / 60)
                     time_str = f"{hours}小時{mins}分"
                 
                 # 提取影像名稱
                 if current <= len(self.image_paths):
                     img_name = self.image_paths[current - 1].name if current > 0 else ""
                     self.batch_progress.set_message(
-                        f"({current}/{total}) {img_name} - 預估剩餘 {time_str}"
+                        f"({current}/{total}) {img_name} - 已處理 {time_str}"
                     )
                 else:
                     self.batch_progress.set_message(f"({current}/{total}) {msg}")
@@ -1179,19 +1177,52 @@ class SegmentationViewer(QMainWindow):
         }
     
     def _load_image_state(self, path: Path) -> None:
-        """載入指定影像的標註狀態，如果不存在則清空"""
+        """載入指定影像的標註狀態，優先從記憶體載入，若無則嘗試從檔案載入"""
         if path in self.per_image_state:
-            # 恢復保存的狀態
+            # 1. 優先從記憶體恢復
             state = self.per_image_state[path]
             self.selected_indices = state['selected_indices'].copy()
             self.annotations = state['annotations'].copy()
         else:
-            # 清空狀態（新影像或尚未標註）
-            self.selected_indices.clear()
-            self.annotations.clear()
+            # 2. 嘗試從檔案載入既有標註
+            json_path = path.parent / f"{path.stem}_annotations.json"
+            loaded_from_file = False
+            
+            if json_path.exists():
+                try:
+                    import json
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # 恢復標註
+                    self.selected_indices.clear()
+                    self.annotations.clear()
+                    
+                    for item in data.get('annotations', []):
+                        idx = item.get('index')
+                        class_id = item.get('class_id', 0)
+                        if idx is not None:
+                            self.selected_indices.add(idx)
+                            self.annotations[idx] = class_id
+                    
+                    loaded_from_file = True
+                    self.status.message(f"已載入既有標註: {json_path.name}")
+                    
+                    # 同步到記憶體狀態
+                    self._save_current_image_state()
+                    
+                except Exception as e:
+                    logger.error(f"載入標註檔案失敗: {e}")
+            
+            if not loaded_from_file:
+                # 3. 若無任何記錄，清空狀態
+                self.selected_indices.clear()
+                self.annotations.clear()
         
         # 清空歷史記錄（每張影像獨立）
         self.annotation_history.clear()
+        self.annotation_redo_stack.clear()
+        self._update_undo_redo_buttons()
     
     def _prev_image(self) -> None:
         """Navigate to the previous image."""
