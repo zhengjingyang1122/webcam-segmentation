@@ -108,10 +108,17 @@ class StatusFooter(QStatusBar):
         self._lbl_status.setMinimumWidth(120)
         self._lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._lbl_status.setStyleSheet("font-weight: bold; color: #e8eaed;")
+        
+        # 4. 工具模式
+        self._lbl_tool_mode = QLabel("", self)
+        self._lbl_tool_mode.setMinimumWidth(100)
+        self._lbl_tool_mode.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._lbl_tool_mode.setStyleSheet("color: #00cec9; font-weight: bold;")
 
         self._info_layout.addWidget(self._lbl_res)
         self._info_layout.addWidget(self._lbl_cursor)
         self._info_layout.addWidget(self._lbl_status)
+        self._info_layout.addWidget(self._lbl_tool_mode)
         
         self.addPermanentWidget(self._info_widget, 0)
 
@@ -121,6 +128,7 @@ class StatusFooter(QStatusBar):
         self._display_mode = None  # "遮罩" 或 "BBox"
         self._is_union = False  # True=聯集, False=個別
         self._selected_count = 0  # 已選目標數
+        self._tool_mode = ""  # 當前工具模式
 
         self._sim_timer = QTimer(self)
         self._sim_timer.setInterval(60)
@@ -181,6 +189,11 @@ class StatusFooter(QStatusBar):
             self._selected_count = max(0, int(selected_count))
         except Exception:
             self._selected_count = 0
+        self._update_meta()
+    
+    def set_tool_mode(self, mode_name: str) -> None:
+        """設定當前工具模式顯示"""
+        self._tool_mode = mode_name
         self._update_meta()
 
     # ---------- 靜態安裝器 ----------
@@ -277,6 +290,12 @@ class StatusFooter(QStatusBar):
             self._lbl_status.setText(f"[{mode_str}] 已選: {self._selected_count}")
         else:
             self._lbl_status.setText("")
+            
+        # 4. 工具模式
+        if getattr(self, "_tool_mode", None):
+            self._lbl_tool_mode.setText(f"工具: {self._tool_mode}")
+        else:
+            self._lbl_tool_mode.setText("")
 
     # 模擬載入進度：從 25% 慢慢跑到 99%，等待實際完成後才補 100%
     def start_scifi_simulated(

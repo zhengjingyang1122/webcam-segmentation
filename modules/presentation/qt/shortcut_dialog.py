@@ -11,12 +11,24 @@ from modules.presentation.qt.shortcut_manager import ShortcutManager
 class ShortcutEditorDialog(QDialog):
     """快捷鍵編輯對話框"""
     
-    # 動作名稱對應的中文描述
-    ACTION_NAMES = {
-        'nav.prev': '上一張影像',
-        'nav.next': '下一張影像',
-        'save.selected': '儲存選取物件',
-        'view.reset': '重設檢視'
+    # 動作名稱對應的中文描述和功能說明
+    ACTION_INFO = {
+        'nav.prev': ('上一張影像', '切換到上一張影像'),
+        'nav.next': ('下一張影像', '切換到下一張影像'),
+        'nav.prev_quick': ('快速上一張', '快速跳到上一張影像（保存狀態）'),
+        'nav.next_quick': ('快速下一張', '快速跳到下一張影像（保存狀態）'),
+        'save.selected': ('儲存選取物件', '儲存當前選取的物件'),
+        'view.reset': ('重設檢視', '重設視圖縮放和位置'),
+        'class.set_0': ('設定類別 0', '將選取物件設為類別 0'),
+        'class.set_1': ('設定類別 1', '將選取物件設為類別 1'),
+        'class.set_2': ('設定類別 2', '將選取物件設為類別 2'),
+        'class.set_3': ('設定類別 3', '將選取物件設為類別 3'),
+        'class.set_4': ('設定類別 4', '將選取物件設為類別 4'),
+        'class.set_5': ('設定類別 5', '將選取物件設為類別 5'),
+        'class.set_6': ('設定類別 6', '將選取物件設為類別 6'),
+        'class.set_7': ('設定類別 7', '將選取物件設為類別 7'),
+        'class.set_8': ('設定類別 8', '將選取物件設為類別 8'),
+        'class.set_9': ('設定類別 9', '將選取物件設為類別 9'),
     }
     
     def __init__(self, parent=None):
@@ -42,10 +54,11 @@ class ShortcutEditorDialog(QDialog):
         
         # 快捷鍵表格
         self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["功能", "快捷鍵"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["功能名稱", "功能說明", "快捷鍵"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         layout.addWidget(self.table)
@@ -76,20 +89,27 @@ class ShortcutEditorDialog(QDialog):
         
         for row, (action, key) in enumerate(shortcuts.items()):
             # 功能名稱
-            name_item = QTableWidgetItem(self.ACTION_NAMES.get(action, action))
+            info = self.ACTION_INFO.get(action, (action, ''))
+            name_item = QTableWidgetItem(info[0])
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(row, 0, name_item)
+            
+            # 功能說明
+            desc_item = QTableWidgetItem(info[1])
+            desc_item.setFlags(desc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            desc_item.setForeground(Qt.GlobalColor.gray)
+            self.table.setItem(row, 1, desc_item)
             
             # 快捷鍵
             key_item = QTableWidgetItem(key)
             key_item.setData(Qt.ItemDataRole.UserRole, action)  # 儲存 action
-            self.table.setItem(row, 1, key_item)
+            self.table.setItem(row, 2, key_item)
         
         self.table.itemChanged.connect(self._on_item_changed)
     
     def _on_item_changed(self, item):
         """當表格項目改變時"""
-        if item.column() == 1:
+        if item.column() == 2:  # 快捷鍵欄
             self.modified = True
     
     def _reset_defaults(self):
@@ -104,12 +124,24 @@ class ShortcutEditorDialog(QDialog):
             defaults = {
                 'nav.prev': 'PageUp',
                 'nav.next': 'PageDown',
+                'nav.prev_quick': 'Shift+Space',
+                'nav.next_quick': 'Space',
                 'save.selected': 'Ctrl+S',
-                'view.reset': 'R'
+                'view.reset': 'R',
+                'class.set_0': '1',
+                'class.set_1': '2',
+                'class.set_2': '3',
+                'class.set_3': '4',
+                'class.set_4': '5',
+                'class.set_5': '6',
+                'class.set_6': '7',
+                'class.set_7': '8',
+                'class.set_8': '9',
+                'class.set_9': '0',
             }
             
             for row in range(self.table.rowCount()):
-                key_item = self.table.item(row, 1)
+                key_item = self.table.item(row, 2)
                 action = key_item.data(Qt.ItemDataRole.UserRole)
                 if action in defaults:
                     key_item.setText(defaults[action])
@@ -120,7 +152,7 @@ class ShortcutEditorDialog(QDialog):
         """儲存快捷鍵"""
         # 更新 ShortcutManager
         for row in range(self.table.rowCount()):
-            key_item = self.table.item(row, 1)
+            key_item = self.table.item(row, 2)
             action = key_item.data(Qt.ItemDataRole.UserRole)
             new_key = key_item.text().strip()
             

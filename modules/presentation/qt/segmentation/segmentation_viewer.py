@@ -308,6 +308,7 @@ class SegmentationViewer(QMainWindow):
         # 標註系統
         self.annotations: Dict[int, int] = {}  # {mask_index: class_id}
         self.annotation_history: List[Dict] = []  # 歷史記錄
+        self.annotation_redo_stack: List[Dict] = []  # Redo 堆疊
         self.max_history = 20  # 最多保留20步
         self._list_hover_idx: Optional[int] = None  # 列表懸浮的索引
         
@@ -524,6 +525,18 @@ class SegmentationViewer(QMainWindow):
         lay_manual.addWidget(self.lbl_brush_size)
         lay_manual.addWidget(self.slider_brush_size)
         
+        # Undo/Redo 按鈕
+        undo_redo_layout = QHBoxLayout()
+        self.btn_undo = QPushButton("↶ 復原")
+        self.btn_undo.setToolTip("撤銷上一步操作 (Ctrl+Z)")
+        self.btn_undo.setEnabled(False)
+        self.btn_redo = QPushButton("↷ 重做")
+        self.btn_redo.setToolTip("重做已撤銷的操作 (Ctrl+Y)")
+        self.btn_redo.setEnabled(False)
+        undo_redo_layout.addWidget(self.btn_undo)
+        undo_redo_layout.addWidget(self.btn_redo)
+        lay_manual.addLayout(undo_redo_layout)
+        
         grp_manual_tools.setLayout(lay_manual)
 
         # ========== 5. 儲存操作 ==========
@@ -548,7 +561,7 @@ class SegmentationViewer(QMainWindow):
         grp_objects = QGroupBox("")
         # 與控制面板保持一致的邊距 (Left, Top, Right, Bottom)
         # 控制面板通常有預設邊距，這裡我們設定一個合理的邊距來對齊
-        grp_objects.setContentsMargins(10, 50, 10, 10) 
+        grp_objects.setContentsMargins(5, 5, 5, 5) 
         objects_layout = QVBoxLayout()
         
         # 使用 QTableWidget 替代 QListWidget
@@ -632,6 +645,8 @@ class SegmentationViewer(QMainWindow):
         self.btn_next.clicked.connect(self._next_image)
         self.btn_save_selected.clicked.connect(self._save_selected)
         self.btn_save_all.clicked.connect(self._save_all)
+        self.btn_undo.clicked.connect(self._undo_annotation)
+        self.btn_redo.clicked.connect(self._redo_annotation)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.status = StatusFooter.install(self)
@@ -802,6 +817,10 @@ class SegmentationViewer(QMainWindow):
         # 先載入並顯示第一張影像，讓視窗有內容
         self._load_current_image(recompute=False)
         
+        # 記錄批次處理開始時間
+        import time
+        self._batch_start_time = time.time()
+        
         # 然後啟動批次處理（會跳過已有快取的影像）
         from modules.presentation.qt.progress_dialog import ThemedProgressDialog
         self.batch_progress = ThemedProgressDialog("批次處理中", "準備開始...", self)
@@ -823,7 +842,36 @@ class SegmentationViewer(QMainWindow):
     def _on_batch_progress(self, current, total, msg):
         if hasattr(self, 'batch_progress'):
             self.batch_progress.set_value(current)
-            self.batch_progress.set_message(f"({current}/{total}) {msg}")
+            
+            # 計算預估剩餘時間
+            if hasattr(self, '_batch_start_time') and current > 0:
+                import time
+                elapsed = time.time() - self._batch_start_time
+                avg_time = elapsed / current
+                remaining = avg_time * (total - current)
+                
+                # 格式化時間
+                if remaining < 60:
+                    time_str = f"{int(remaining)}秒"
+                elif remaining < 3600:
+                    mins = int(remaining / 60)
+                    secs = int(remaining % 60)
+                    time_str = f"{mins}分{secs}秒"
+                else:
+                    hours = int(remaining / 3600)
+                    mins = int((remaining % 3600) / 60)
+                    time_str = f"{hours}小時{mins}分"
+                
+                # 提取影像名稱
+                if current <= len(self.image_paths):
+                    img_name = self.image_paths[current - 1].name if current > 0 else ""
+                    self.batch_progress.set_message(
+                        f"({current}/{total}) {img_name} - 預估剩餘 {time_str}"
+                    )
+                else:
+                    self.batch_progress.set_message(f"({current}/{total}) {msg}")
+            else:
+                self.batch_progress.set_message(f"({current}/{total}) {msg}")
 
     def _on_batch_finished(self):
         if hasattr(self, 'batch_progress'):
@@ -1183,6 +1231,14 @@ class SegmentationViewer(QMainWindow):
         """Handle tool change events to update cursor."""
         viewport = self.view.viewport()
         
+        # 工具名稱映射
+        tool_names = {
+            0: "👆 選取",
+            1: "🖌️ 畫筆",
+            2: "🧽 橡皮擦",
+            3: "🧹 魔法掃把"
+        }
+        
         if tool_id == 0: # Cursor
             viewport.setCursor(Qt.CursorShape.ArrowCursor)
         elif tool_id == 1: # Brush
@@ -1191,6 +1247,10 @@ class SegmentationViewer(QMainWindow):
             viewport.setCursor(self._create_emoji_cursor("🧽"))
         elif tool_id == 3: # Magic Broom
             viewport.setCursor(self._create_emoji_cursor("🧹"))
+        
+        # 更新狀態欄顯示當前工具
+        if hasattr(self, 'status') and tool_id in tool_names:
+            self.status.set_tool_mode(tool_names[tool_id])
 
     def _update_cursor_visual(self, pos: QPoint) -> None:
         """Update the visual cursor position and size."""
@@ -1886,12 +1946,22 @@ class SegmentationViewer(QMainWindow):
         # 限制歷史記錄數量
         if len(self.annotation_history) > self.max_history:
             self.annotation_history.pop(0)
+        # 清空 redo stack（新操作會使 redo 失效）
+        self.annotation_redo_stack.clear()
+        self._update_undo_redo_buttons()
     
     def _undo_annotation(self) -> None:
         """復原上一步標註"""
         if not self.annotation_history:
             self.status.message_temp("無可復原的操作", 1000)
             return
+        
+        # 儲存當前狀態到 redo stack
+        current_state = {
+            'selected_indices': self.selected_indices.copy(),
+            'annotations': self.annotations.copy()
+        }
+        self.annotation_redo_stack.append(current_state)
         
         # 恢復上一個狀態
         state = self.annotation_history.pop()
@@ -1902,7 +1972,40 @@ class SegmentationViewer(QMainWindow):
         self._update_canvas()
         self._update_selected_count()
         self._update_object_list()
+        self._update_undo_redo_buttons()
         self.status.message_temp("已復原", 1000)
+    
+    def _redo_annotation(self) -> None:
+        """重做已撤銷的操作"""
+        if not self.annotation_redo_stack:
+            self.status.message_temp("無可重做的操作", 1000)
+            return
+        
+        # 儲存當前狀態到歷史
+        current_state = {
+            'selected_indices': self.selected_indices.copy(),
+            'annotations': self.annotations.copy()
+        }
+        self.annotation_history.append(current_state)
+        
+        # 恢復 redo 狀態
+        state = self.annotation_redo_stack.pop()
+        self.selected_indices = state['selected_indices']
+        self.annotations = state['annotations']
+        
+        # 更新UI
+        self._update_canvas()
+        self._update_selected_count()
+        self._update_object_list()
+        self._update_undo_redo_buttons()
+        self.status.message_temp("已重做", 1000)
+    
+    def _update_undo_redo_buttons(self) -> None:
+        """更新 Undo/Redo 按鈕的啟用狀態"""
+        if hasattr(self, 'btn_undo'):
+            self.btn_undo.setEnabled(len(self.annotation_history) > 0)
+        if hasattr(self, 'btn_redo'):
+            self.btn_redo.setEnabled(len(self.annotation_redo_stack) > 0)
     
     def _on_mode_changed(self, mode_id: int) -> None:
         """處理輸出模式切換"""
