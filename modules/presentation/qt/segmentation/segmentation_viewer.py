@@ -9,7 +9,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 from PySide6.QtCore import QDir, QEvent, QPoint, QRectF, Qt, QThread, Signal, QSize
-from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform, QKeySequence, QShortcut, QBrush
+from PySide6.QtGui import QAction, QColor, QImage, QPainter, QPixmap, QTransform, QKeySequence, QShortcut, QBrush, QPen, QCursor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QGraphicsPixmapItem,
+    QGraphicsEllipseItem,
     QGraphicsScene,
     QGraphicsView,
     QGridLayout,
@@ -497,6 +498,8 @@ class SegmentationViewer(QMainWindow):
         self.tool_group.addButton(self.btn_tool_brush, 1)
         self.tool_group.addButton(self.btn_tool_eraser, 2)
         self.tool_group.addButton(self.btn_tool_magic, 3)
+        # 連接工具切換信號以更新游標
+        self.tool_group.idClicked.connect(self._on_tool_changed)
         
         # 筆刷大小滑桿
         self.lbl_brush_size = QLabel("筆刷大小: 10px")
@@ -1120,7 +1123,191 @@ class SegmentationViewer(QMainWindow):
         else:
             self.status.message_temp("已重設視圖", 1000)
 
-    # ---- mapping / hit ----
+    def _create_emoji_cursor(self, emoji: str, size: int = 32) -> QCursor:
+        """Create a cursor from an emoji."""
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        # Try to use a font that supports emojis well on Windows
+        font = QFont("Segoe UI Emoji", int(size * 0.8)) 
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        painter.setFont(font)
+        
+        # Center the emoji
+        rect = QRectF(0, 0, size, size)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, emoji)
+        painter.end()
+        
+        # Create cursor with hotspot at center
+        return QCursor(pixmap, size // 2, size // 2)
+
+    def _on_tool_changed(self, tool_id: int):
+        """Handle tool change events to update cursor."""
+        viewport = self.view.viewport()
+        
+        if tool_id == 0: # Cursor
+            viewport.setCursor(Qt.CursorShape.ArrowCursor)
+        elif tool_id == 1: # Brush
+            viewport.setCursor(self._create_emoji_cursor("🖌️"))
+        elif tool_id == 2: # Eraser
+            viewport.setCursor(self._create_emoji_cursor("🧽"))
+        elif tool_id == 3: # Magic Broom
+            viewport.setCursor(self._create_emoji_cursor("🧹"))
+
+    def _update_cursor_visual(self, pos: QPoint) -> None:
+        """Update the visual cursor position and size."""
+        if not hasattr(self, 'cursor_item'):
+            return
+            
+        tool_id = self.tool_group.checkedId()
+        # 1=Brush, 2=Eraser
+        if tool_id in [1, 2]:
+            # Map widget pos to scene pos (image coordinates)
+            scene_pos = self.view.mapToScene(pos)
+            
+            size = self.slider_brush_size.value()
+            
+            # Update cursor item
+            # Center the ellipse on the mouse position
+            self.cursor_item.setRect(
+                scene_pos.x() - size / 2,
+                scene_pos.y() - size / 2,
+                size,
+                size
+            )
+            
+            # Update cursor color based on selected object
+            if tool_id == 1 and self.selected_indices: # Brush
+                # Use the color of the last selected object
+                last_idx = sorted(list(self.selected_indices))[-1]
+                color = self._get_mask_color(last_idx)
+                # BGR to RGB for QColor
+                qcolor = QColor(color[2], color[1], color[0])
+                self.cursor_item.setPen(QPen(qcolor, 1, Qt.PenStyle.SolidLine))
+            else:
+                # Eraser or no selection: White
+                self.cursor_item.setPen(QPen(QColor(255, 255, 255), 1, Qt.PenStyle.SolidLine))
+                
+            self.cursor_item.show()
+        else:
+            self.cursor_item.hide()
+
+    # ---- drawing events ----
+    def _on_drawing_started(self, pos: QPoint) -> None:
+        self._last_draw_pos = self._map_widget_to_image(pos)
+        self._last_brush_pos = self._last_draw_pos # For smoothing
+        
+        # 儲存狀態以供 Undo
+        self._save_annotation_state()
+        
+        # 立即應用第一點
+        if self._last_draw_pos:
+            self._apply_brush_stroke(self._last_draw_pos)
+
+    def _on_drawing_moved(self, pos: QPoint) -> None:
+        # Update visual cursor
+        self._update_cursor_visual(pos)
+        
+        current_pos = self._map_widget_to_image(pos)
+        if current_pos is None:
+            return
+            
+        # Smooth drawing using Bresenham's line algorithm
+        if self._last_brush_pos:
+            x0, y0 = self._last_brush_pos
+            x1, y1 = current_pos
+            points = self._get_line_points(x0, y0, x1, y1)
+            for p in points:
+                self._apply_brush_stroke(p)
+        else:
+            self._apply_brush_stroke(current_pos)
+            
+        self._last_brush_pos = current_pos
+
+    def _on_drawing_finished(self, pos: QPoint) -> None:
+        self._last_draw_pos = None
+        self._last_brush_pos = None
+        # Final canvas update
+        self._update_canvas()
+
+    def _get_line_points(self, x0: int, y0: int, x1: int, y1: int) -> list:
+        """Bresenham's line algorithm to get all points between two pixels."""
+        points = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        x, y = x0, y0
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        if dx > dy:
+            err = dx / 2.0
+            while x != x1:
+                points.append((x, y))
+                err -= dy
+                if err < 0:
+                    y += sy
+                    err += dx
+                x += sx
+        else:
+            err = dy / 2.0
+            while y != y1:
+                points.append((x, y))
+                err -= dx
+                if err < 0:
+                    x += sx
+                    err += dy
+                y += sy
+        points.append((x1, y1))
+        return points
+
+    def _apply_brush_stroke(self, pos: Tuple[int, int]) -> None:
+        tool_id = self.tool_group.checkedId()
+        if tool_id not in [1, 2, 3]: # Brush, Eraser, Magic
+            return
+            
+        path = self.image_paths[self.idx]
+        if path not in self.cache:
+            return
+            
+        bgr, masks, scores = self.cache[path]
+        x, y = pos
+        brush_size = self.slider_brush_size.value()
+        radius = brush_size // 2
+        
+        H, W = bgr.shape[:2]
+        
+        # 1. Magic Broom
+        if tool_id == 3:
+            # ... (Magic broom logic implementation if needed, skipping for now as user focused on brush/eraser)
+            # For now, let's just implement basic brush/eraser
+            pass
+            
+        # 2. Brush / Eraser
+        else:
+            # 如果沒有選取任何物件，且是畫筆模式，則創建一個新物件
+            if not self.selected_indices and tool_id == 1:
+                new_mask = np.zeros((H, W), dtype=np.uint8)
+                masks.append(new_mask)
+                scores.append(1.0) # Dummy score
+                new_idx = len(masks) - 1
+                self.selected_indices.add(new_idx)
+                self.annotations[new_idx] = 0 # Default class
+                self._update_object_list()
+                self._update_selected_count()
+            
+            # 對所有選取的 mask 進行操作
+            for idx in self.selected_indices:
+                if 0 <= idx < len(masks):
+                    mask = masks[idx]
+                    if tool_id == 1: # Brush
+                        cv2.circle(mask, (x, y), radius, 1, -1)
+                    elif tool_id == 2: # Eraser
+                        cv2.circle(mask, (x, y), radius, 0, -1)
+        
+        # Update canvas (partial update could be optimized, but full update is safer)
+        self._update_canvas()
+
+
     def _map_widget_to_image(self, p: QPoint) -> Optional[Tuple[int, int]]:
         """Map widget coordinates to image coordinates."""
         return self.view.map_widget_to_image(p)
@@ -1153,16 +1340,36 @@ class SegmentationViewer(QMainWindow):
         if getattr(self, "chk_show_candidates", None) and self.chk_show_candidates.isChecked():
             # 建立一個全黑的遮罩層
             candidates_overlay = np.zeros_like(base)
+            # 建立一個 alpha 通道層，用於處理重疊
+            alpha_map = np.zeros(base.shape[:2], dtype=np.float32)
+            
             for i, m in enumerate(masks):
                 # 跳過已選取的 (避免重複繪製)
                 if i in self.selected_indices:
                     continue
-                # 繪製未選取的遮罩 (白色)
-                candidates_overlay[m > 0] = [255, 255, 255]
+                
+                # 取得該遮罩的區域
+                mask_bool = m > 0
+                
+                # 生成唯一顏色
+                color = np.array(self._generate_class_color(i), dtype=np.uint8)
+                
+                # 在 overlay 上繪製顏色
+                # 對於重疊區域，這裡採用"最後繪製優先"的策略
+                # 這符合"以交集的為主"的一種解釋（顯示最上層的遮罩）
+                candidates_overlay[mask_bool] = color
+                
+                # 標記有遮罩的區域
+                alpha_map[mask_bool] = 0.3  # 設定候選遮罩的透明度
             
-            # 混合到底圖 (alpha=0.15)
-            mask_indices = candidates_overlay > 0
-            base[mask_indices] = (base[mask_indices] * 0.85 + candidates_overlay[mask_indices] * 0.15).astype(np.uint8)
+            # 混合到底圖
+            # 只有在有候選遮罩的地方才進行混合
+            mask_indices = alpha_map > 0
+            
+            # 向量化混合計算
+            # base = base * (1 - alpha) + overlay * alpha
+            alpha_3d = alpha_map[mask_indices][:, None]
+            base[mask_indices] = (base[mask_indices] * (1 - alpha_3d) + candidates_overlay[mask_indices] * alpha_3d).astype(np.uint8)
 
         # 顯示模式: 0=遮罩, 1=BBox
         disp_id = self.display_group.checkedId() if hasattr(self, "display_group") else 0
@@ -1830,6 +2037,9 @@ class SegmentationViewer(QMainWindow):
                     return ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
 
                 if event.type() == QEvent.MouseMove:
+                    # Update visual cursor
+                    self._update_cursor_visual(event.position().toPoint() if hasattr(event, "position") else event.pos())
+
                     # 在繪圖模式下不處理 hover
                     tool_id = self.tool_group.checkedId()
                     if tool_id != 0:  # 非選取模式

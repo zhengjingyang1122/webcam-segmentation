@@ -496,18 +496,6 @@ class SegmentationLauncher(QMainWindow):
             compute_masks,
             title=title
         )
-        
-        # Apply current theme to viewer
-        apply_theme(viewer, self.current_theme)
-        
-        # Window management: Keep launcher open
-        viewer.show()
-        
-        # Track viewer
-        self._active_viewers.append(viewer)
-        
-        # Remove from list when closed
-        # Note: SegmentationViewer has 'closed' signal we added
         if hasattr(viewer, 'closed'):
             viewer.closed.connect(lambda: self._on_viewer_closed(viewer))
         else:
