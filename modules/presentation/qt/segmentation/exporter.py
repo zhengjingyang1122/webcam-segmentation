@@ -27,7 +27,6 @@ class Exporter:
         crop_bbox: bool,
         chk_coco: bool,
         chk_voc: bool,
-        chk_labelme: bool,
         chk_yolo_det: bool,
         chk_yolo_seg: bool
     ) -> None:
@@ -97,7 +96,6 @@ class Exporter:
             Exporter.write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h, indices, annotations, chk_yolo_det, chk_yolo_seg)
             Exporter.write_coco_json(out_dir, base_name, boxes, polys, img_w, img_h, indices, annotations, chk_coco)
             Exporter.write_voc_xml(out_dir, base_name, boxes, img_w, img_h, save_path.name, indices, annotations, chk_voc)
-            Exporter.write_labelme_json(out_dir, base_name, polys, img_w, img_h, save_path.name, indices, annotations, chk_labelme)
             
             QMessageBox.information(parent_widget, "完成", f"已儲存聯集影像至：\n{save_path}")
         else:
@@ -116,7 +114,6 @@ class Exporter:
         crop_bbox: bool,
         chk_coco: bool,
         chk_voc: bool,
-        chk_labelme: bool,
         chk_yolo_det: bool,
         chk_yolo_seg: bool
     ) -> int:
@@ -182,7 +179,6 @@ class Exporter:
             Exporter.write_yolo_labels(out_dir, base_name_orig, all_boxes, all_polys, W, H, valid_indices, annotations, chk_yolo_det, chk_yolo_seg)
             Exporter.write_coco_json(out_dir, base_name_orig, all_boxes, all_polys, W, H, valid_indices, annotations, chk_coco)
             Exporter.write_voc_xml(out_dir, base_name_orig, all_boxes, W, H, image_path.name, valid_indices, annotations, chk_voc)
-            Exporter.write_labelme_json(out_dir, base_name_orig, all_polys, W, H, image_path.name, valid_indices, annotations, chk_labelme)
             
             QMessageBox.information(parent_widget, "完成", f"已儲存 {saved_count} 個物件影像及標註檔案")
         else:
@@ -298,38 +294,7 @@ class Exporter:
         tree = ET.ElementTree(root)
         tree.write(out_dir / f"{base_name}.xml", encoding="utf-8", xml_declaration=True)
 
-    @staticmethod
-    def write_labelme_json(out_dir, base_name, polys, w, h, filename, indices, annotations, enabled):
-        if not enabled:
-            return
-            
-        shapes = []
-        for i, poly in enumerate(polys):
-            if poly is not None and len(poly) > 0:
-                obj_idx = indices[i] if i < len(indices) else 0
-                cls_id = annotations.get(obj_idx, 0)
-                cls_name = f"class_{cls_id}"
-                
-                shape = {
-                    "label": cls_name,
-                    "points": poly.tolist(),
-                    "group_id": None,
-                    "shape_type": "polygon",
-                    "flags": {}
-                }
-                shapes.append(shape)
-                
-        data = {
-            "version": "4.5.6",
-            "flags": {},
-            "shapes": shapes,
-            "imagePath": filename,
-            "imageData": None,
-            "imageHeight": h,
-            "imageWidth": w
-        }
-        
-        (out_dir / f"{base_name}_labelme.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
 
     @staticmethod
     def write_yolo_labels(out_dir, base_name, boxes, polys, img_w, img_h, indices, annotations, det_enabled, seg_enabled):

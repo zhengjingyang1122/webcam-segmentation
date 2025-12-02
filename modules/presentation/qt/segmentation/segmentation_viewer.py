@@ -189,7 +189,6 @@ class SegmentationViewer(QMainWindow):
             "crop_bbox": cp.crop_group.checkedId() == 1,
             "chk_coco": cp.chk_coco.isChecked(),
             "chk_voc": cp.chk_voc.isChecked(),
-            "chk_labelme": cp.chk_labelme.isChecked(),
             "chk_yolo_det": cp.chk_yolo_det.isChecked(),
             "chk_yolo_seg": cp.chk_yolo_seg.isChecked(),
         }
@@ -231,7 +230,6 @@ class SegmentationViewer(QMainWindow):
             crop_bbox=cp.crop_group.checkedId() == 1,
             chk_coco=cp.chk_coco.isChecked(),
             chk_voc=cp.chk_voc.isChecked(),
-            chk_labelme=cp.chk_labelme.isChecked(),
             chk_yolo_det=cp.chk_yolo_det.isChecked(),
             chk_yolo_seg=cp.chk_yolo_seg.isChecked(),
         )

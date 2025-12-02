@@ -147,14 +147,12 @@ class ControlPanelWidget(QWidget):
         self.chk_yolo_seg = QCheckBox("YOLO (分割)")
         self.chk_coco = QCheckBox("COCO")
         self.chk_voc = QCheckBox("VOC")
-        self.chk_labelme = QCheckBox("LabelMe") # Added missing one
         
         lay = QGridLayout()
         lay.addWidget(self.chk_yolo_det, 0, 0)
         lay.addWidget(self.chk_yolo_seg, 0, 1)
         lay.addWidget(self.chk_coco, 1, 0)
         lay.addWidget(self.chk_voc, 1, 1)
-        lay.addWidget(self.chk_labelme, 2, 0)
         
         grp.setLayout(lay)
         return grp
