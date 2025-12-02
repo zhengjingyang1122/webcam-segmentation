@@ -459,9 +459,23 @@ class SegmentationViewer(QMainWindow):
             self._load_current_image()
 
     def _reset_view_and_selections(self):
-        self.view.reset_view()
+        """重設視圖並清除所有選取和標註"""
+        # 清除所有狀態管理器的資料
         self.state_manager.clear_current_state()
+        
+        # 清除懸浮索引
+        self._hover_idx = None
+        self._list_hover_idx = None
+        
+        # 重設視圖變換
+        self.view.reset_view()
+        
+        # 清除狀態欄顯示
+        self.status.set_cursor_xy(None, None)
+        
+        # 更新 UI（會同時更新畫布、物件列表、按鈕狀態等）
         self._update_ui_state()
+        
         self.status.message_temp("已重設視圖並清除所有選取", 1500)
 
     # ... (Keep _create_menu_bar, _setup_shortcuts, _start_batch_processing, _on_batch_*, _create_emoji_cursor, _on_tool_changed, _update_cursor_visual, _on_drawing_*, _apply_brush_stroke, _map_widget_to_image, _hit_test_xy, eventFilter)
