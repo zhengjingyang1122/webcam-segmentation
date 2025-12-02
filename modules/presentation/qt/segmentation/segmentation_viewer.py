@@ -81,6 +81,9 @@ class SegmentationViewer(QMainWindow):
         self._hover_idx: Optional[int] = None
         self._list_hover_idx: Optional[int] = None
         
+        # 魔法掃把工具狀態
+        self._magic_selected_idx: Optional[int] = None  # 待刪除的物件索引
+        
         self._setup_shortcuts()
         self._start_batch_processing()
 
@@ -400,6 +403,28 @@ class SegmentationViewer(QMainWindow):
                 if not base.flags['C_CONTIGUOUS']:
                     base = np.ascontiguousarray(base)
                 cv2.polylines(base, contours, True, tuple(int(c) for c in color), 2)
+        
+        # 魔法掃把選中物件的螞蟻線邊框
+        if self._magic_selected_idx is not None and 0 <= self._magic_selected_idx < len(masks):
+            m = masks[self._magic_selected_idx] > 0
+            m_uint8 = m.astype(np.uint8)
+            if not m_uint8.flags['C_CONTIGUOUS']:
+                m_uint8 = np.ascontiguousarray(m_uint8)
+            contours, _ = cv2.findContours(m_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                if not base.flags['C_CONTIGUOUS']:
+                    base = np.ascontiguousarray(base)
+                # 繪製黑白相間的螞蟻線效果
+                import time
+                offset = int(time.time() * 5) % 10  # 動畫偏移
+                for contour in contours:
+                    for i in range(len(contour)):
+                        pt1 = tuple(contour[i][0])
+                        pt2 = tuple(contour[(i + 1) % len(contour)][0])
+                        # 根據偏移量決定顏色
+                        segment_pos = (i + offset) % 10
+                        color = (255, 255, 255) if segment_pos < 5 else (0, 0, 0)
+                        cv2.line(base, pt1, pt2, color, 2)
 
     def _draw_bboxes(self, base, masks, is_union, union_color):
         H, W = base.shape[:2]
@@ -652,6 +677,11 @@ class SegmentationViewer(QMainWindow):
         }
         self.view.viewport().setCursor(cursors.get(tool_id, Qt.CursorShape.ArrowCursor))
         self.status.set_tool_mode(["👆 選取", "🖌️ 畫筆", "🧽 橡皮擦", "🧹 魔法掃把"][tool_id])
+        
+        # 切換工具時清除魔法掃把的選中狀態
+        if tool_id != 3 and self._magic_selected_idx is not None:
+            self._magic_selected_idx = None
+            self._update_canvas()
 
     def _create_emoji_cursor(self, emoji: str, size: int = 32) -> QCursor:
         pixmap = QPixmap(size, size)
@@ -857,7 +887,35 @@ class SegmentationViewer(QMainWindow):
                     self._update_canvas()
                 return False
             elif event.type() == QEvent.MouseButtonPress:
-                if self.control_panel.tool_group.checkedId() == 0:
+                tool_id = self.control_panel.tool_group.checkedId()
+                
+                # 魔法掃把工具的點擊處理
+                if tool_id == 3:
+                    pos = event.position().toPoint()
+                    img_xy = self.view.map_widget_to_image(pos)
+                    if img_xy and event.button() == Qt.MouseButton.LeftButton:
+                        x, y = img_xy
+                        path = self.image_paths[self.idx]
+                        if path in self.cache:
+                            _, masks, scores = self.cache[path]
+                            tgt = self._hit_test_xy(masks, x, y)
+                            
+                            if tgt is not None:
+                                # 如果點擊的是已選中要刪除的物件，執行刪除
+                                if self._magic_selected_idx == tgt:
+                                    self._delete_mask_from_cache(tgt)
+                                    self._magic_selected_idx = None
+                                    self.status.message_temp(f"已刪除物件 #{tgt}", 1500)
+                                else:
+                                    # 否則選中該物件準備刪除
+                                    self._magic_selected_idx = tgt
+                                    self.status.message_temp(f"已選中物件 #{tgt}，再次點擊以刪除", 2000)
+                                
+                                self._update_canvas()
+                    return False
+                
+                # 一般選取工具的點擊處理
+                if tool_id == 0:
                     pos = event.position().toPoint()
                     img_xy = self.view.map_widget_to_image(pos)
                     if img_xy:
@@ -879,6 +937,45 @@ class SegmentationViewer(QMainWindow):
                             self._update_ui_state()
                 return False
         return super().eventFilter(obj, event)
+
+    def _delete_mask_from_cache(self, mask_idx: int):
+        """從當前影像的 cache 中刪除指定的 mask"""
+        path = self.image_paths[self.idx]
+        if path not in self.cache:
+            return
+        
+        bgr, masks, scores = self.cache[path]
+        
+        if 0 <= mask_idx < len(masks):
+            # 刪除 mask 和對應的 score
+            del masks[mask_idx]
+            del scores[mask_idx]
+            
+            # 更新 cache
+            self.cache[path] = (bgr, masks, scores)
+            
+            # 更新選取索引（所有大於被刪除索引的都要減1）
+            new_selected = set()
+            for idx in self.state_manager.selected_indices:
+                if idx < mask_idx:
+                    new_selected.add(idx)
+                elif idx > mask_idx:
+                    new_selected.add(idx - 1)
+                # idx == mask_idx 的項目被跳過（刪除）
+            
+            self.state_manager.selected_indices = new_selected
+            
+            # 更新標註（同樣需要調整索引）
+            new_annotations = {}
+            for idx, class_id in self.state_manager.annotations.items():
+                if idx < mask_idx:
+                    new_annotations[idx] = class_id
+                elif idx > mask_idx:
+                    new_annotations[idx - 1] = class_id
+            
+            self.state_manager.annotations = new_annotations
+            
+            self._update_ui_state()
 
     def _hit_test_xy(self, masks, x, y):
         if not masks: return None
