@@ -58,207 +58,23 @@ from PySide6.QtWidgets import (
 
 
 from modules.presentation.qt.status_footer import StatusFooter
+from .utils import compute_bbox, compute_polygon
+from .workers import SegmentationWorker, BatchSegmentationWorker
+from .image_view import ImageView
 
 logger = logging.getLogger(__name__)
 
 
-# ---------- helpers ----------
-def np_bgr_to_qpixmap(bgr: np.ndarray) -> QPixmap:
-    """Convert a BGR numpy array to a QPixmap."""
-    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    h, w, _ = rgb.shape
-    qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-    return QPixmap.fromImage(qimg.copy())
 
 
-def compute_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
-    """Compute the bounding box (x, y, w, h) for a binary mask."""
-    ys, xs = np.where(mask > 0)
-    if ys.size == 0:
-        return 0, 0, mask.shape[1], mask.shape[0]
-    x1, x2 = xs.min(), xs.max()
-    y1, y2 = ys.min(), ys.max()
-    return int(x1), int(y1), int(x2 - x1 + 1), int(y2 - y1 + 1)
 
 
-class SegmentationWorker(QThread):
-    finished = Signal(object, object, object)  # bgr, masks, scores
-    error = Signal(str)
-
-    def __init__(self, compute_fn, path, pps, iou):
-        super().__init__()
-        self.compute_fn = compute_fn
-        self.path = path
-        self.pps = pps
-        self.iou = iou
-
-    def run(self):
-        try:
-            bgr, masks, scores = self.compute_fn(self.path, self.pps, self.iou)
-            self.finished.emit(bgr, masks, scores)
-        except Exception as e:
-            logger.error(f"SegmentationWorker error processing {self.path}: {e}", exc_info=True)
-            self.error.emit(str(e))
-
-
-class BatchSegmentationWorker(QThread):
-    progress = Signal(int, int, str)
-    finished = Signal()
-    
-    def __init__(self, compute_fn, paths, pps, iou):
-        super().__init__()
-        self.compute_fn = compute_fn
-        self.paths = paths
-        self.pps = pps
-        self.iou = iou
-        self._is_running = True
-
-    def run(self):
-        total = len(self.paths)
-        for i, path in enumerate(self.paths):
-            if not self._is_running:
-                break
-            
-            cache_file = path.parent / f"{path.stem}.sam_cache.npz"
-            if cache_file.exists():
-                self.progress.emit(i + 1, total, f"已快取: {path.name}")
-                continue
-
-            self.progress.emit(i + 1, total, f"處理中: {path.name}")
-            try:
-                bgr, masks, scores = self.compute_fn(path, self.pps, self.iou)
-                
-                # Save to cache
-                cache_data = {'scores': np.array(scores)}
-                for k, m in enumerate(masks):
-                    cache_data[f'mask_{k}'] = m
-                np.savez_compressed(cache_file, **cache_data)
-                
-            except Exception as e:
-                logger.error(f"BatchSegmentationWorker error processing {path}: {e}", exc_info=True)
-        
-        self.finished.emit()
-
-    def stop(self):
-        self._is_running = False
 
 
 # ---------- QGraphicsView-based image view ----------
 
 
-class ImageView(QGraphicsView):
-    """A custom QGraphicsView for displaying images with zoom and pan support."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._scene = QGraphicsScene(self)
-        self.setScene(self._scene)
-        self._pix_item: Optional[QGraphicsPixmapItem] = None
-        self.setRenderHints(
-            self.renderHints() | QPainter.Antialiasing | QPainter.SmoothPixmapTransform
-        )
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.setDragMode(QGraphicsView.NoDrag)
-        self.setMouseTracking(True)
-
-    def set_image_bgr(self, bgr: np.ndarray) -> None:
-        """Set the image to display from a BGR numpy array."""
-        pix = np_bgr_to_qpixmap(bgr)
-        if self._pix_item is None:
-            self._pix_item = self._scene.addPixmap(pix)
-            self._pix_item.setZValue(0)
-            self._scene.setSceneRect(QRectF(pix.rect()))
-            self.reset_view()
-        else:
-            self._pix_item.setPixmap(pix)
-            self._scene.setSceneRect(QRectF(pix.rect()))
-
-    def wheelEvent(self, ev) -> None:
-        """Handle mouse wheel events for zooming."""
-        delta = ev.angleDelta().y()
-        if delta == 0:
-            return
-        factor = pow(1.0015, delta)  # 平滑倍率
-        self.scale(factor, factor)
-
-    # Signals for drawing interaction
-    drawing_started = Signal(int, int)  # x, y
-    drawing_moved = Signal(int, int)    # x, y
-    drawing_finished = Signal(int, int) # x, y
-
-    def mousePressEvent(self, ev) -> None:
-        """Handle mouse press events for panning or drawing."""
-        if ev.button() == Qt.MouseButton.MiddleButton:
-            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-            # 轉送成左鍵給 QGraphicsView 內部開始拖曳
-            fake = type(ev)(
-                QEvent.MouseButtonPress,
-                ev.position(),
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier,
-            )
-            super().mousePressEvent(fake)
-            ev.accept()
-        elif ev.button() == Qt.MouseButton.LeftButton:
-            # Check if we are in drawing mode (handled by parent logic via signals)
-            # Map to image coordinates
-            p = self.map_widget_to_image(ev.position().toPoint())
-            if p:
-                self.drawing_started.emit(p[0], p[1])
-            super().mousePressEvent(ev)
-        else:
-            super().mousePressEvent(ev)
-
-    def mouseMoveEvent(self, ev) -> None:
-        """Handle mouse move events."""
-        super().mouseMoveEvent(ev)
-        if ev.buttons() & Qt.MouseButton.LeftButton:
-            p = self.map_widget_to_image(ev.position().toPoint())
-            if p:
-                self.drawing_moved.emit(p[0], p[1])
-
-    def mouseReleaseEvent(self, ev) -> None:
-        """Handle mouse release events to stop panning or drawing."""
-        if ev.button() == Qt.MouseButton.MiddleButton:
-            fake = type(ev)(
-                QEvent.MouseButtonRelease,
-                ev.position(),
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.NoButton,
-                Qt.KeyboardModifier.NoModifier,
-            )
-            super().mouseReleaseEvent(fake)
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            ev.accept()
-        elif ev.button() == Qt.MouseButton.LeftButton:
-            p = self.map_widget_to_image(ev.position().toPoint())
-            if p:
-                self.drawing_finished.emit(p[0], p[1])
-            super().mouseReleaseEvent(ev)
-        else:
-            super().mouseReleaseEvent(ev)
-
-    def reset_view(self) -> None:
-        """Reset the view transform and center on the image."""
-        self.setTransform(QTransform())
-        if self._pix_item is not None:
-            self.centerOn(self._pix_item)
-
-    def map_widget_to_image(self, p: QPoint) -> Optional[Tuple[int, int]]:
-        """Map a widget coordinate to image coordinates."""
-        if self._pix_item is None:
-            return None
-        scene_pt = self.mapToScene(p)
-        img_x = int(scene_pt.x())
-        img_y = int(scene_pt.y())
-        rect = self._pix_item.pixmap().rect()
-        if not rect.contains(img_x, img_y):
-            return None
-        img_x = max(0, min(img_x, rect.width() - 1))
-        img_y = max(0, min(img_y, rect.height() - 1))
-        return img_x, img_y
 
 
 class SegmentationViewer(QMainWindow):
@@ -1653,7 +1469,7 @@ class SegmentationViewer(QMainWindow):
             img_h, img_w = h, w
             # 標註以裁後影像為座標系
             boxes = [(0, 0, w, h)]
-            poly = self._compute_polygon(union_mask[y : y + h, x : x + w])
+            poly = compute_polygon(union_mask[y : y + h, x : x + w])
             polys = [poly]
         else:
             # 原圖大小
@@ -1661,7 +1477,7 @@ class SegmentationViewer(QMainWindow):
             img_h, img_w = H, W
             x, y, w, h = compute_bbox(union_mask > 0)
             boxes = [(x, y, w, h)]
-            poly = self._compute_polygon(union_mask)
+            poly = compute_polygon(union_mask)
             polys = [poly]
 
         # 取得選擇的格式
@@ -1728,7 +1544,7 @@ class SegmentationViewer(QMainWindow):
             
             # 收集原始座標資料
             x_orig, y_orig, w_orig, h_orig = compute_bbox(m)
-            poly_orig = self._compute_polygon(m)
+            poly_orig = compute_polygon(m)
             
             all_boxes.append((x_orig, y_orig, w_orig, h_orig))
             all_polys.append(poly_orig)
@@ -1911,14 +1727,7 @@ class SegmentationViewer(QMainWindow):
         
         (out_dir / f"{base_name}_labelme.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    def _compute_polygon(self, mask: np.ndarray) -> Optional[np.ndarray]:
-        """回傳最大連通域的外輪廓座標，形狀為 (N,2)，整數像素座標。"""
-        m = (mask > 0).astype(np.uint8)
-        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts:
-            return None
-        c = max(cnts, key=cv2.contourArea)
-        return c.reshape(-1, 2)  # (N,2)
+
 
     def _write_yolo_labels(
         self,
