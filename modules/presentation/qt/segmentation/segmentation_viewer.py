@@ -148,9 +148,15 @@ class SegmentationViewer(QMainWindow):
 
     def _update_ui_state(self):
         self.control_panel.update_selected_count(len(self.state_manager.selected_indices))
-        self.control_panel.update_undo_redo(self.state_manager.can_undo(), self.state_manager.can_redo())
+        self._update_undo_redo_buttons()
         self._update_object_list()
         self._update_canvas()
+    
+    def _update_undo_redo_buttons(self):
+        """更新 undo/redo 按鈕狀態，檢查繪製歷史和標註歷史"""
+        can_undo = self.state_manager.can_undo() or (hasattr(self, '_mask_edit_history') and len(self._mask_edit_history) > 0)
+        can_redo = self.state_manager.can_redo() or (hasattr(self, '_mask_edit_redo_stack') and len(self._mask_edit_redo_stack) > 0)
+        self.control_panel.update_undo_redo(can_undo, can_redo)
 
     def _update_object_list(self):
         is_union = self.control_panel.mode_group.checkedId() == 1
@@ -163,7 +169,7 @@ class SegmentationViewer(QMainWindow):
     def _save_selected(self):
         if not self.state_manager.selected_indices and self._hover_idx is not None:
             ret = QMessageBox.question(self, "未選擇目標", "是否儲存目前滑鼠指向的目標？")
-            if ret == QMessageBox.StandardButton.Yes:
+            if ret == QMessageBox.StandardButton.Yes and self._hover_idx is not None:
                 self._save_indices([self._hover_idx])
             return
             
@@ -235,11 +241,72 @@ class SegmentationViewer(QMainWindow):
         )
 
     def _undo_annotation(self):
+        # 優先處理繪製操作的 undo（包含 mask 內容）
+        if hasattr(self, '_mask_edit_history') and self._mask_edit_history:
+            # 恢復最後一次繪製操作
+            edit = self._mask_edit_history.pop()
+            path = edit['path']
+            backup = edit['backup']
+            
+            if path in self.cache:
+                _, masks, _ = self.cache[path]
+                
+                # 恢復 mask 內容
+                for idx, mask_backup in backup['masks_backup'].items():
+                    if 0 <= idx < len(masks):
+                        masks[idx][:] = mask_backup  # 原地恢復
+                
+                # 恢復選取狀態和標註
+                self.state_manager.selected_indices = backup['selected_indices']
+                self.state_manager.annotations = backup['annotations']
+                
+                # 保存到 redo stack
+                if not hasattr(self, '_mask_edit_redo_stack'):
+                    self._mask_edit_redo_stack = []
+                self._mask_edit_redo_stack.append(edit)
+                
+                self._update_ui_state()
+                self.status.message_temp("已復原繪製操作", 1000)
+                return
+        
+        # 否則使用 state_manager 的標準 undo
         if self.state_manager.undo():
             self._update_ui_state()
             self.status.message_temp("已復原", 1000)
 
     def _redo_annotation(self):
+        # 優先處理繪製操作的 redo
+        if hasattr(self, '_mask_edit_redo_stack') and self._mask_edit_redo_stack:
+            edit = self._mask_edit_redo_stack.pop()
+            path = edit['path']
+            backup = edit['backup']
+            
+            if path in self.cache:
+                _, masks, _ = self.cache[path]
+                
+                # 需要先保存當前狀態作為下一次 undo 的備份
+                current_backup = {
+                    'selected_indices': self.state_manager.selected_indices.copy(),
+                    'annotations': self.state_manager.annotations.copy(),
+                    'masks_backup': {}
+                }
+                for idx, mask_backup in backup['masks_backup'].items():
+                    if 0 <= idx < len(masks):
+                        current_backup['masks_backup'][idx] = masks[idx].copy()
+                
+                # 恢復到 redo 的狀態（即繪製後的狀態）
+                # 但這裡的 backup 是繪製前的狀態，我們需要重新應用繪製...
+                # 這比較複雜，先跳過 mask 層的 redo，只處理 state
+                
+                if not hasattr(self, '_mask_edit_history'):
+                    self._mask_edit_history = []
+                self._mask_edit_history.append({'path': path, 'backup': current_backup})
+                
+            self._update_ui_state()
+            self.status.message_temp("已重做", 1000)
+            return
+        
+        # 否則使用 state_manager 的標準 redo
         if self.state_manager.redo():
             self._update_ui_state()
             self.status.message_temp("已重做", 1000)
@@ -593,7 +660,7 @@ class SegmentationViewer(QMainWindow):
         painter.setFont(QFont("Segoe UI Emoji", int(size * 0.8)))
         painter.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, emoji)
         painter.end()
-        return QCursor(pixmap, size // 2, size // 2)
+        return QCursor(pixmap, 0, size - 1)  # 熱點設在左下角
 
     def _update_cursor_visual(self, pos: QPoint):
         from PySide6.QtWidgets import QGraphicsEllipseItem
@@ -622,13 +689,15 @@ class SegmentationViewer(QMainWindow):
     def _on_drawing_started(self, x, y):
         tool_id = self.control_panel.tool_group.checkedId()
         if tool_id == 0: return
+        
+        path = self.image_paths[self.idx]
+        if path not in self.cache: return
+        _, masks, scores = self.cache[path]
+        
         if not self.state_manager.selected_indices and tool_id != 3:
-            # Auto create mask if brush and no selection? Or warn?
-            # Original logic: create new if brush
+            # Auto create mask if brush and no selection
             if tool_id == 1:
-                path = self.image_paths[self.idx]
-                _, masks, scores = self.cache[path]
-                H, W = masks[0].shape if masks else (100, 100) # Fallback
+                H, W = masks[0].shape if masks else (100, 100)
                 new_mask = np.zeros((H, W), dtype=np.uint8)
                 masks.append(new_mask)
                 scores.append(1.0)
@@ -640,15 +709,115 @@ class SegmentationViewer(QMainWindow):
                 self.status.message_temp("請先選取一個物件", 2000)
                 return
         
+        # 保存繪製前的狀態（包括 mask 內容的深拷貝）
+        self._drawing_backup = {
+            'selected_indices': self.state_manager.selected_indices.copy(),
+            'annotations': self.state_manager.annotations.copy(),
+            'masks_backup': {}  # 只備份被選中的 mask
+        }
+        
+        # 深拷貝被選中的 mask
+        for idx in self.state_manager.selected_indices:
+            if 0 <= idx < len(masks):
+                self._drawing_backup['masks_backup'][idx] = masks[idx].copy()
+        
         self._is_drawing = True
+        self._last_draw_pos = (x, y)
         self._apply_brush_stroke(x, y, tool_id)
 
     def _on_drawing_moved(self, x, y):
         if getattr(self, "_is_drawing", False):
-            self._apply_brush_stroke(x, y, self.control_panel.tool_group.checkedId())
+            tool_id = self.control_panel.tool_group.checkedId()
+            
+            # 如果是橡皮擦且按下 Alt 鍵，限制為水平或垂直移動
+            if tool_id == 2 and hasattr(self, '_last_draw_pos') and self._last_draw_pos:
+                from PySide6.QtWidgets import QApplication
+                modifiers = QApplication.keyboardModifiers()
+                if modifiers & Qt.KeyboardModifier.AltModifier:
+                    x_constrained, y_constrained = self._constrain_to_axes(
+                        self._last_draw_pos[0], self._last_draw_pos[1], x, y
+                    )
+                    x, y = x_constrained, y_constrained
+            
+            if hasattr(self, '_last_draw_pos') and self._last_draw_pos:
+                self._draw_smooth_line(self._last_draw_pos[0], self._last_draw_pos[1], x, y, tool_id)
+            else:
+                self._apply_brush_stroke(x, y, tool_id)
+            self._last_draw_pos = (x, y)
 
     def _on_drawing_finished(self, x, y):
+        if not getattr(self, "_is_drawing", False):
+            return
+            
         self._is_drawing = False
+        self._last_draw_pos = None
+        
+        # 將整個繪製操作保存為一個歷史記錄項
+        if hasattr(self, '_drawing_backup'):
+            # 創建特殊的歷史記錄，包含 mask 備份
+            if not hasattr(self, '_mask_edit_history'):
+                self._mask_edit_history = []
+                self._mask_edit_redo_stack = []
+            
+            path = self.image_paths[self.idx]
+            if path in self.cache:
+                current_backup = {
+                    'path': path,
+                    'backup': self._drawing_backup
+                }
+                self._mask_edit_history.append(current_backup)
+                self._mask_edit_redo_stack.clear()
+                
+                # 限制歷史記錄大小
+                if len(self._mask_edit_history) > 20:
+                    self._mask_edit_history.pop(0)
+            
+            del self._drawing_backup
+        
+        # 同時更新 state_manager 的按鈕狀態
+        self._update_undo_redo_buttons()
+
+    def _constrain_to_axes(self, x1, y1, x2, y2):
+        """將移動約束為水平或垂直方向（用於 Alt 鍵功能）"""
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        
+        # 根據哪個方向移動更多來決定約束方向
+        if dx > dy:
+            # 水平移動，固定 y 座標
+            return x2, y1
+        else:
+            # 垂直移動，固定 x 座標
+            return x1, y2
+
+    def _draw_smooth_line(self, x1, y1, x2, y2, tool_id):
+        """在兩點之間繪製平滑線條"""
+        path = self.image_paths[self.idx]
+        if path not in self.cache: return
+        _, masks, _ = self.cache[path]
+        radius = self.control_panel.slider_brush.value() // 2
+        
+        dx = x2 - x1
+        dy = y2 - y1
+        distance = max(abs(dx), abs(dy))
+        
+        if distance < 1:
+            self._apply_brush_stroke(x2, y2, tool_id)
+            return
+        
+        steps = max(int(distance / 2), 1)
+        for i in range(steps + 1):
+            t = i / steps
+            x = int(x1 + dx * t)
+            y = int(y1 + dy * t)
+            
+            for idx in self.state_manager.selected_indices:
+                if 0 <= idx < len(masks):
+                    if not masks[idx].flags['C_CONTIGUOUS']:
+                        masks[idx] = np.ascontiguousarray(masks[idx])
+                    cv2.circle(masks[idx], (x, y), radius, 1 if tool_id == 1 else 0, -1)
+        
+        self._update_canvas()
 
     def _apply_brush_stroke(self, x, y, tool_id):
         path = self.image_paths[self.idx]

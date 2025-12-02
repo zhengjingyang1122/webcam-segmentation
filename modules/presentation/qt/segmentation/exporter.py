@@ -141,7 +141,7 @@ class Exporter:
         valid_indices = []
 
         for i in indices:
-            if not (0 <= i < len(masks)):
+            if i is None or not (0 <= i < len(masks)):
                 continue
             m = masks[i] > 0
             
