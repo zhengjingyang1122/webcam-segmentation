@@ -651,7 +651,14 @@ class SegmentationViewer(QMainWindow):
 
     def eventFilter(self, obj, event):
         if obj is self.view.viewport():
-            if event.type() == QEvent.MouseMove:
+            if event.type() == QEvent.Leave:
+                # 滑鼠離開畫布時清除懸浮預覽
+                if self._hover_idx is not None:
+                    self._hover_idx = None
+                    self.status.set_cursor_xy(None, None)
+                    self._update_canvas()
+                return False
+            elif event.type() == QEvent.MouseMove:
                 pos = event.position().toPoint()
                 img_xy = self.view.map_widget_to_image(pos)
                 if self.control_panel.tool_group.checkedId() == 0:
